@@ -1,0 +1,43 @@
+
+#(no_builtins)
+__compileprint__("Helo from compiler, this has b33n taken 0ver") // time to work on pub structs
+todo {pub struct X {
+    y: i32
+}
+}
+
+extern C {
+    fn printf(str: RawString,...) -> i32
+}
+
+fn printer(type: i32){
+    printf("%d\n",type)
+}
+y = 100
+z = printer(y)
+
+fn vga_entry_color(fg: i32, bg: i32) -> u8 {
+    |fg b| bg << 4| as u8
+}
+
+fn vga_entry(uc: u8, color: u8) -> u16 {
+    |uc b| color << 8u8 | as u16
+}
+todo {
+mut struct String {
+    c_str: &i8
+}
+
+__compileprint__("Init'd struct") 
+
+extend String {
+    fn as_str(&self) -> &i8 {
+        __compileprint__("Calling as_str") 
+        return self.c_str
+    }
+}
+}
+
+__compileprint__("Finished struct") 
+
+//fn strlen(str: &i8) -> i32 

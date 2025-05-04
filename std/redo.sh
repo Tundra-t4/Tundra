@@ -1,0 +1,1 @@
+cd ../tundrac && bash build.sh && sudo mv ./tundrac /usr/local/bin/tundra/
