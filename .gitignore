@@ -1,0 +1,8 @@
+*.exe
+*.log
+maven/Test/
+Release/*
+std/build/*
+./tundra-docs
+examples/kpf
+examples/tOS

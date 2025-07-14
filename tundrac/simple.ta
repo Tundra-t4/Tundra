@@ -1,0 +1,27 @@
+extern C {
+    fn printf(str: RawString, ...) -> i32
+}
+
+
+mut struct Sheep {
+    name: RawString,
+    age: i32
+}
+
+extend Sheep {
+    fn Baaa(self){
+        printf("Hello, my name is: %s\n",self.name)
+    }
+    fn Clone() -> self {
+        Sheep {name: "Dolly", age: 1}
+    }
+    
+} // I have no idea how to do this
+
+fn test(){
+    Baalord = Sheep {name: "Baalord", age: 37}
+    Baalord.Baaa()
+    printf("%s has been cloned\n",Baalord.Clone())
+}
+
+test()

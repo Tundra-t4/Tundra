@@ -1092,7 +1092,7 @@ struct assign_instruction : public Instruction {
             if (!usename){
             if (variables.find(varname) == variables.end()) {
                 auto vtype = value->exec(ctx,mod,builder,variables,functions).gettype();
-                std::cout << varname << vtype->isArrayTy() << std::endl;
+                //std::cout << varname << vtype->isArrayTy() << std::endl;
                 llvm::Value* v = new llvm::GlobalVariable(mod,vtype,false,llvm::GlobalValue::InternalLinkage,llvm::Constant::getNullValue(vtype),varname);
                 variables[varname] = v;
                 types[varname] = vtype;
@@ -1243,7 +1243,7 @@ struct operation_instruction : public Instruction {
                 } else {
                     result = builder.CreateICmpSGE(vlhs,vrhs,gettmp());
                 }
-        } else if (op == "=<"){
+        } else if (op == "<="){
                 if (!is_signed){
                     result = builder.CreateICmpULE(vlhs,vrhs,gettmp()); // aaaaaaaa
                 } else {
@@ -1499,6 +1499,9 @@ struct block_instruction : public Instruction {
 
     InstructionContainer execute(llvm::LLVMContext & ctx, llvm::Module & mod, MetadataIRBuilder &builder,
                  std::unordered_map<std::string, llvm::Value *> &variables, std::unordered_map<std::string, llvm::Function *> & functions) override {
+        if (insts_size() == 0){
+            return InstructionContainer(std::any());
+        }
         bool prev = ismainblock;
         bool prevwhile = isnonspecblock;
         isnonspecblock = false;
@@ -2940,7 +2943,7 @@ class Instructor {
 
     }
     
-    std::string inittarget(std::string target, std::string reloc="PIC"){ 
+    std::string inittarget(std::string target, std::string reloc="PIC",std::string cpu="generic"){ 
     if (!DL){
         DL = std::make_shared<llvm::DataLayout>();
     }
@@ -2958,36 +2961,48 @@ class Instructor {
     llvm::StringRef targetTripleRef(target);
     
     const llvm::Target *targettype = llvm::TargetRegistry::lookupTarget(target, errorr);
+    
     if (!targettype) {
-        //std::cout << "Error: Unable to find target: " << target << "\n";
+        std::cout << "Error: Unable to find target: " << target << "\n";
         exit(0);
     }
+    
+
 
 
     llvm::TargetOptions options;
+    if (cpu != "generic" && cpu == "native"){
+        cpu = llvm::sys::getHostCPUName().str();
+        
+        cpu = cpu.empty() ? "generic" : cpu;
+    }
+
+
+
     if (reloc == "relocstatic"){
-        this->targetMachine = std::unique_ptr<llvm::TargetMachine>(targettype->createTargetMachine(target, "generic", "", options, llvm::Reloc::Static));
+        this->targetMachine = std::unique_ptr<llvm::TargetMachine>(targettype->createTargetMachine(target, cpu, "", options, llvm::Reloc::Static));
     }
     else if (reloc == "relocrwpi"){
 
-        this->targetMachine = std::unique_ptr<llvm::TargetMachine>(targettype->createTargetMachine(target, "generic", "", options, llvm::Reloc::RWPI));
+        this->targetMachine = std::unique_ptr<llvm::TargetMachine>(targettype->createTargetMachine(target, cpu, "", options, llvm::Reloc::RWPI));
     }
     else if (reloc == "relocropi"){
 
-        this->targetMachine = std::unique_ptr<llvm::TargetMachine>(targettype->createTargetMachine(target, "generic", "", options, llvm::Reloc::ROPI));
+        this->targetMachine = std::unique_ptr<llvm::TargetMachine>(targettype->createTargetMachine(target, cpu, "", options, llvm::Reloc::ROPI));
     }
     else if (reloc == "relocropirwpi"){
 
-        this->targetMachine = std::unique_ptr<llvm::TargetMachine>(targettype->createTargetMachine(target, "generic", "", options, llvm::Reloc::ROPI_RWPI));
+        this->targetMachine = std::unique_ptr<llvm::TargetMachine>(targettype->createTargetMachine(target, cpu, "", options, llvm::Reloc::ROPI_RWPI));
     }
     else if (reloc == "relocdynnopic"){
 
-        this->targetMachine = std::unique_ptr<llvm::TargetMachine>(targettype->createTargetMachine(target, "generic", "", options, llvm::Reloc::DynamicNoPIC));
+        this->targetMachine = std::unique_ptr<llvm::TargetMachine>(targettype->createTargetMachine(target, cpu, "", options, llvm::Reloc::DynamicNoPIC));
     } else {
 
-    this->targetMachine = std::unique_ptr<llvm::TargetMachine>(targettype->createTargetMachine(target, "generic", "", options, llvm::Reloc::PIC_));
+    this->targetMachine = std::unique_ptr<llvm::TargetMachine>(targettype->createTargetMachine(target, cpu, "", options, llvm::Reloc::PIC_));
     }
     auto ty = targetMachine->createDataLayout();
+    
     module.setDataLayout(ty);
     module.setTargetTriple(target);
 

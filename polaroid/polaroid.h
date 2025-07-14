@@ -617,7 +617,7 @@ class Instructor {
 
 
     Instructor(std::string modulename) : module(modulename, context), builder(context) {}
-    std::string inittarget(std::string target, std::string reloc="PIC");
+    std::string inittarget(std::string target, std::string reloc="PIC",std::string cpu="generic");
     void executeInstruction(std::shared_ptr<Instruction>inst);
     void buildAndOutput(const std::string &filename,std::unordered_map<std::string,bool> options={},int optlevel=2);
     private:

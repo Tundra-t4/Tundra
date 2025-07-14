@@ -1,1 +1,1 @@
-/opt/homebrew/opt/llvm/bin/clang++ -std=c++20 ../polaroid/polaroid.o -o tundrac tundrac.cpp -I./include/ -I../polaroid/ -I/opt/homebrew/Cellar/llvm/20.1.3/include -L/opt/homebrew/opt/llvm/lib -lLLVM-20 -I./modules/HParser ./modules/HParser/Hparser.o 
+/opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -g ../polaroid/polaroid.o -o tundrac tundrac.cpp -I./include/ -I../polaroid/ -I/opt/homebrew/Cellar/llvm/20.1.3/include -L/opt/homebrew/opt/llvm/lib -lLLVM-20 -I./modules/HParser ./modules/HParser/Hparser.o 
