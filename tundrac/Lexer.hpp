@@ -299,7 +299,7 @@ public:
             ladvance();
             }
 
-            return {TokenType::xadecimal,convertToString(hexStringToNumber(input.substr(start,currentPos-start)))};
+            return {TokenType::xadecimal,TypeConverter::to_string(parse_hex(input.substr(start,currentPos-start)))};
         }
         if (input.substr(currentPos,2) == "0b"){
             ladvance();
@@ -315,7 +315,7 @@ public:
             ladvance();
             }
 
-            return {TokenType::xadecimal,convertToString(binaryStringToNumber(input.substr(start,currentPos-start)))};
+            return {TokenType::xadecimal,TypeConverter::to_string(parse_binary(input.substr(start,currentPos-start)))};
         }
 
         if (input.substr(currentPos,2) == "0o"){
@@ -331,7 +331,7 @@ public:
             ladvance();
             }
 
-            return {TokenType::xadecimal,convertToString(octalStringToNumber(input.substr(start,currentPos-start)))};
+            return {TokenType::xadecimal,TypeConverter::to_string(parse_octal(input.substr(start,currentPos-start)))};
         }
 
         
@@ -492,7 +492,7 @@ private:
             std::string result = input.substr(start, currentPos - start);
             ladvance();
 
-            return encodeUTF8(static_cast<char32_t>(hexStringToNumber("0x" + result)));
+            return encodeUTF8(static_cast<char32_t>(parse_hex("0x" + result)));
         } else if (input.substr(currentPos,2) == "\\n"){
             ladvance();
             ladvance();

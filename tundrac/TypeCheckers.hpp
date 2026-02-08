@@ -207,7 +207,7 @@ bool compareMap(const tsl::ordered_map<K, T>& map1, const tsl::ordered_map<K, T>
 
     if (map1.size() != map2.size()) return false;
     for (const auto& [key, value1] : map1) {
-        logat(convertToString(key),"cM");
+        logat(TypeConverter::to_string(key),"cM");
         const auto it = map2.find(key);
         if (it == map2.end()) return false;
         const T& value2 = it->second;

@@ -1,7 +1,9 @@
 #include "base.hpp"
+#include <memory>
 
 #ifndef INTERPRETER_C
 #define INTERPRETER_C
+#include <filesystem>
 struct Object;
 class MappedFunction;
 class Tag;
@@ -106,17 +108,7 @@ std::shared_ptr<Typing> getTyping(const std::string& typeName) {
 }
 
 
-int idctr = 0;
-tsl::ordered_map<int,std::vector<int>> lpos; // line & pos for errorisms
-class ASTNode {
-public:
-    ASTNode(): id(++idctr){}
-    std::string getPointsTO(){return pointsTO;}
-    void setPointsTO(std::string x){this->pointsTO = x;}
-    virtual ~ASTNode() = default;
-    int id = 0;
-    std::string pointsTO;
-};
+
 
 
 // Further value structs to be used in the interpreter (can be struct or class)
@@ -184,13 +176,13 @@ public:
         auto typer = getTyping(type);  // Get the typing for the current type
         std::string valueStr;
         
-        // Convert the value to a string if it's a string or using the convertToString function
-        logat("isString: " + convertToString(isString()),"Object.GSF");
+        // Convert the value to a string if it's a string or using the TypeConverter::to_string function
+        logat("isString: " + TypeConverter::to_string(isString()),"Object.GSF");
         auto iss = isString();
         if (iss) {
             valueStr = getString();
         } else {
-            valueStr = convertToString(value);
+            valueStr = TypeConverter::to_string(value);
         }
         logat("PD -> " +getTypeName(value)  + " -> " + type ,"Object.GSF");
         
@@ -198,7 +190,7 @@ public:
             iss = true;
             
         }
-        logat("isString: " + convertToString(iss) + "\n" + getTypeName(value),"Object.GSF");
+        logat("isString: " + TypeConverter::to_string(iss) + "\n" + getTypeName(value),"Object.GSF");
         double converted;
         if (iss == false){
         try {
@@ -206,7 +198,7 @@ public:
 
 
         // Try to convert the string to an integer
-        converted = std::any_cast<double>(convertToDouble(valueStr));  // Attempt conversion to int
+        converted = std::any_cast<double>(TypeConverter::convert_to<double>(valueStr));  // Attempt conversion to int
         } catch(...){
             logat("F","Object.GSF");
             converted= NULL;
@@ -215,7 +207,7 @@ public:
         
         //std::cout << "max: " << type << ": " << max(type) << std::endl;
         if (in(type,inttypeNames) == true && converted > max(type)){
-            throw std::runtime_error("Value exceeds the maximum of " + type + "\nMax of: " + convertToString(max(type)));
+            throw std::runtime_error("Value exceeds the maximum of " + type + "\nMax of: " + TypeConverter::to_string(max(type)));
         }
         logat("FM","Object.GSF");
         
@@ -268,7 +260,7 @@ public:
         if (isString() == true){
         valueStr = getString();
         } else {
-            valueStr = convertToString(this->GetStore());
+            valueStr = TypeConverter::to_string(this->GetStore());
         }
         //println("RETURNED");
         return valueStr;
@@ -367,14 +359,12 @@ struct TypeSafeList {
         std::any found = list.find(index);
         auto f = std::any_cast<tsl::ordered_map<int, std::any>::iterator>(found);
         if (f == list.end()){
-            throw std::runtime_error("Index " + convertToString(index) + " not found in list." );
+            throw std::runtime_error("Index " + TypeConverter::to_string(index) + " not found in list." );
         }
         return f->second;
     }
     void add(std::any value){
-        if (compareAnyTy(type,value) == false){
-            throw std::runtime_error("Type of value added to TypeSafe list should be: " + getTypeName(type) + ".\nType got: " + getTypeName(value));
-        }
+
         this->list[list.size()] = value;}
     void remove(){this->list.erase(list.size()-1);}
     int len() {return size;}
@@ -387,9 +377,6 @@ struct TypeSafeList {
     }
     std::any getType()const{return type;}
     void set(int index, std::any v){
-        if (compareAnyTy(type,v) == false){
-            throw std::runtime_error("Type of value added to TypeSafe list should be: " + getTypeName(type) + ".\nType got: " + getTypeName(v));
-        }
         this->list[index] = v;
     }
     int size;
@@ -411,7 +398,7 @@ struct Tuple {
         std::any found = list.find(index);
         auto f = std::any_cast<tsl::ordered_map<int, std::any>::iterator>(found);
         if (f == list.end()){
-            throw std::runtime_error("Index " + convertToString(index) + " not found in tuple." );
+            throw std::runtime_error("Index " + TypeConverter::to_string(index) + " not found in tuple." );
         }
         return f->second;
     }
@@ -442,7 +429,7 @@ struct List {
         std::any found = list.find(index);
         auto f = std::any_cast<tsl::ordered_map<int, std::any>::iterator>(found);
         if (f == list.end()){
-            throw std::runtime_error("Index " + convertToString(index) + " not found in list." );
+            throw std::runtime_error("Index " + TypeConverter::to_string(index) + " not found in list." );
         }
         return f->second;
     }
@@ -452,7 +439,7 @@ struct List {
     std::vector<std::string> StringRep(){
         std::vector<std::string> SR;
         for (auto& v : list){
-            SR.push_back(convertToString(v.second));
+            SR.push_back(TypeConverter::to_string(v.second));
         }
     }
     private:

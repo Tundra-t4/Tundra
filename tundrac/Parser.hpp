@@ -19,7 +19,6 @@ public:
         currentToken = lexer.getNextToken();  // Get the first token
     }
 
-    // Parse the entire input and return the root AST node
     std::shared_ptr<BlockNode> parse() {
         return parseBlock(true);
     }
@@ -177,9 +176,9 @@ public:
                     displayError("Expected '->' in extern function decleration",lexer.line,lexer.poswline,lexer.poswline+2,notes);
                 }
                 match(TokenType::ReturnTy);
-                args["-!retty"] = parseExpression();
+                auto retty = parseExpression();
 
-                fns.push_back(std::make_shared<MappedFunctionNode>(args,std::make_shared<ASTNode>(),tick,internals));
+                fns.push_back(std::make_shared<MappedFunctionNode>(args,std::make_shared<BlockNode>(),tick,internals,false,retty));
 
 
             }
@@ -279,17 +278,16 @@ public:
             consume(TokenType::ReturnTy);
             retty = parseExpression();
             }
-            args["-!retty"] = retty;
             if (currentToken.type == TokenType::LBrace){
             if (anon){
-                return std::make_shared<MappedFunctionNode>(args,parseBlock(),tick,internals,isselfptr);
+                return std::make_shared<MappedFunctionNode>(args,parseBlock(),tick,internals,isselfptr,retty);
             }
-            return std::make_shared<AssignNode>(fnname,std::make_shared<MappedFunctionNode>(args,parseBlock(),tick,internals,isselfptr));
+            return std::make_shared<AssignNode>(fnname,std::make_shared<MappedFunctionNode>(args,parseBlock(),tick,internals,isselfptr,retty));
             } else {
                 if (anon){
-                    return std::make_shared<MappedFunctionNode>(args,std::make_shared<BlockNode>(),tick,internals,isselfptr);
+                    return std::make_shared<MappedFunctionNode>(args,std::make_shared<BlockNode>(),tick,internals,isselfptr,retty);
                 }
-                return std::make_shared<AssignNode>(fnname,std::make_shared<MappedFunctionNode>(args,std::make_shared<BlockNode>(),tick,internals,isselfptr));
+                return std::make_shared<AssignNode>(fnname,std::make_shared<MappedFunctionNode>(args,std::make_shared<BlockNode>(),tick,internals,isselfptr,retty));
             }
         }
         // all that's left is the noding then interpretations
@@ -435,7 +433,7 @@ public:
         } else if (id == "result"){
             match(TokenType::LParen);
             auto rid = consume(TokenType::Identifier);
-            result = rid;
+            //result = rid;
             
             
             
@@ -457,7 +455,7 @@ public:
             displayError("Invalid identifier for '#'\nGot: " + id,lexer.line,idpos,lexer.poswline-2,gerr({"note","Structure of '#' is #<id>(<key>=<type>) or #(<id>)","supported <id>s","\n- ruleset"}) );
         }
         
-        auto austin = std::make_shared<ASTNode>(); isbadnode.push_back(austin->id); return austin;
+        auto austin = std::make_shared<ErrorNode>(); isbadnode.push_back(austin->id); return austin;
     }
     std::shared_ptr<ASTNode> parseAssert(){
         advance(); // assert
@@ -487,7 +485,7 @@ public:
             advance();
         }
         match(TokenType::RBrace);
-        auto austin = std::make_shared<ASTNode>(); isbadnode.push_back(austin->id); return austin;
+        auto austin = std::make_shared<ErrorNode>(); isbadnode.push_back(austin->id); return austin;
     }
     std::shared_ptr<ASTNode> parseDrop(){
         advance(); // drop
@@ -631,7 +629,7 @@ public:
             return std::make_shared<ASMNode>(ASMStr,regs,in,out,inout,assigns);
         }
     }
-    std::shared_ptr<ASTNode> symbolize(SymbolEntry symbol){
+    /*std::shared_ptr<ASTNode> symbolize(SymbolEntry symbol){
         try {
         if (symbol.dataType == "unknown"){
             return nullptr;
@@ -641,7 +639,7 @@ public:
         } else if (symbol.dataType == "i32"){
             return std::make_shared<IntLiteralNode>(symbol.value);
         } else if (converters.find(symbol.dataType) != converters.end()) {
-            return std::make_shared<ONode>(Object(convertToDouble(symbol.value),symbol.dataType));
+            return std::make_shared<ONode>(Object(TypeConverter::convert_to<double>(symbol.value),symbol.dataType));
         } else if (dummyValues.find(symbol.dataType) != dummyValues.end()){
             return std::make_shared<Fakepass>(dummyValues[symbol.dataType]);
         } else {
@@ -650,7 +648,7 @@ public:
         } catch  (...) {
             return nullptr;
         }
-    }
+    }*/
     std::shared_ptr<ASTNode> parseImport(){
         advance(); // import
         if (currentToken.value == "header"){
@@ -672,7 +670,7 @@ public:
         auto parsed = parser.parseFile(dp + "/" + fp,"");
         std::vector<std::shared_ptr<ASTNode>> externs;
         std::vector<std::string> fnnames;
-        for (auto& sym: parsed){
+        /*for (auto& sym: parsed){
             if (sym.type == SymbolType::Assignment){
                 auto s = symbolize(sym);
                 if (s){
@@ -709,7 +707,7 @@ public:
                 }
                 vec.push_back(std::make_shared<AssignNode>(sym.name,std::make_shared<StructDeclNode>(fields,cons),true));
             }
-        }
+        }*/
         std::vector<std::string> variadic{};
         vec.push_back(std::make_shared<ExternNode>(externs,fnnames,variadic));
         return std::make_shared<ChainNode>(vec);
@@ -753,7 +751,7 @@ public:
     std::shared_ptr<ASTNode> parseTag(){
         auto pv = parseFunction();
         auto mfn = std::dynamic_pointer_cast<AssignNode>(pv);
-        return std::make_shared<AssignNode>(mfn->getVarName(),std::make_shared<TagNode>(mfn->getValue()),mfn->getMut());
+        return std::make_shared<AssignNode>(mfn->getVarName(),std::make_shared<TagNode>(mfn->getValue()),mfn->isMutable());
         
     }
     std::shared_ptr<ASTNode> parseStatement() {
@@ -966,9 +964,9 @@ public:
         if (currentToken.type == TokenType::Integer){
             //println(currentToken.value);
             times = parseIntLiteral();
-            //println(convertToString(std::dynamic_pointer_cast<IntLiteralNode>(times)->getValue()));
+            //println(TypeConverter::to_string(std::dynamic_pointer_cast<IntLiteralNode>(times)->getValue()));
         } else {
-            times = std::make_shared<ASTNode>();
+            times = std::make_shared<ErrorNode>();
         }
         auto v = parseBlock(); // {}
         
@@ -1017,9 +1015,9 @@ public:
                 advance();
                 if (currentToken.type == TokenType::Assign){
                     advance();
-                    mem = std::make_shared<MemAccNode>(mem, std::make_shared<StringLiteralNode>(p),true,parseExpression());
+                    mem = std::make_shared<MemAccNode>(mem, std::make_shared<IdentifierNode>(p),true,parseExpression());
                 } else {
-                    mem = std::make_shared<MemAccNode>(mem, std::make_shared<StringLiteralNode>(p));
+                    mem = std::make_shared<MemAccNode>(mem, std::make_shared<IdentifierNode>(p));
                 }
 
             }
@@ -1071,7 +1069,7 @@ public:
         auto elser = parseExpression();
         auto BN2 = std::make_shared<BlockNode>();
         BN2->addStatement(elser);
-        auto elsemain = std::make_shared<ExpressionNode>(std::make_shared<ASTNode>(),BN2);
+        auto elsemain = std::make_shared<ExpressionNode>(std::make_shared<ErrorNode>(),BN2);
         tsl::ordered_map<int, std::shared_ptr<ExpressionNode>> elses = {};
         auto ifn = std::make_shared<IFNode>(ifmain,elses,elsemain);
         isused.push_back(ifn->id);
@@ -1335,10 +1333,10 @@ public:
         } else {
             retty = std::make_shared<IdentifierNode>("none");
         }
-        args["-!retty"] = retty;
+
         auto BN = std::make_shared<BlockNode>();
         BN->addStatement(std::make_shared<RetNode>(retty));
-        auto node = std::make_shared<MappedFunctionNode>(args,BN,tick,internals);
+        auto node = std::make_shared<MappedFunctionNode>(args,BN,tick,internals,false,retty);
         issig.push_back(node->id);
         return node;
 
@@ -1420,18 +1418,13 @@ public:
         return parseFunction();
     }
 
-    std::shared_ptr<ASTNode> ParseFuture(){
-        advance(); // future
-        auto id = consume(TokenType::Identifier);
-        return std::make_shared<FutureNode>(id);
-    }
 
     std::shared_ptr<ASTNode> parseComment(){
         auto cline = lexer.line;
         while (lexer.line == cline){
             advance();
         }
-        auto austin = std::make_shared<ASTNode>(); isbadnode.push_back(austin->id); return austin;
+        auto austin = std::make_shared<ErrorNode>(); isbadnode.push_back(austin->id); return austin;
     }
     std::shared_ptr<ASTNode> ParseRef(){
         auto apos = lexer.poswline;
@@ -1518,9 +1511,7 @@ public:
                 }
                 macros[ident]->setNID(dummynode->id);
                 return dummynode;
-            } else if (currentToken.value == "future"){
-                return ParseFuture();
-            } else if (currentToken.value == "while"){
+            }else if (currentToken.value == "while"){
                 auto WN = ParseWhile();
                 isused.push_back(WN->id);
                 return WN;
@@ -1611,7 +1602,7 @@ public:
         match(TokenType::Integer);
         
         if (currentToken.type == TokenType::Identifier && converters.find(currentToken.value) != converters.end()){
-            int64_t rval = safeStringToInt64(ival);
+            int64_t rval = safe_string_to_int64(ival);
             std::string type = currentToken.value;
             match(TokenType::Identifier);
             return std::make_shared<ONode>(Object(rval,type));
@@ -1623,7 +1614,7 @@ public:
             intNode = std::make_shared<IntLiteralNode>(std::stoi(ival));
         } catch (std::out_of_range& e) {
             if (!AP.has("-noautomatives")){
-                intNode = std::make_shared<ONode>(Object(safeStringToInt64(ival),"i64"));
+                intNode = std::make_shared<ONode>(Object(safe_string_to_int64(ival),"i64"));
             }
         }
         return intNode;
@@ -1653,7 +1644,7 @@ public:
             macroinfo.clear();
             if (!ret){
                 displayError("During invokation of macro; nothing was returned",lpos[mB->NID][0],lpos[mB->NID][1],lpos[mB->NID][2],gerr({"note", "It is recommended to ensure the macro expands to a statement"}),true);
-                return std::make_shared<ASTNode>();
+                return std::make_shared<ErrorNode>();
             }
             return ret;
         }
@@ -1668,7 +1659,7 @@ public:
         //println(tokenTypeToString(currentToken.type));
 
         // Handle variable assignments (e.g., `x = ...`)
-        if (currentToken.type == TokenType::Assign && aassign == true) {
+        if (currentToken.type == TokenType::Assign) {
             advance();
             //println("ASSIGNING");
             auto value = parseExpression();
@@ -1677,11 +1668,9 @@ public:
         } else if (currentToken.type == TokenType::Colon){
             auto posi = lexer.getCpos();
             advance(); // :
-            aassign = false;
 
             auto strongtype = parseExpression();
             
-            aassign = true;
 
             //std::cout<<"untrue?" << strongtype;
             
@@ -1779,7 +1768,7 @@ std::shared_ptr<type_instruction> intty(std::shared_ptr<Instruction> inst){
 }
 
 
-std::shared_ptr<type_instruction> nety(std::any v){
+/*std::shared_ptr<type_instruction> nety(std::any v){
     //logat("Nety","nety");
     if (v.type() == typeid(int) || v.type() == typeid(int32_t)){
         return intty(std::make_shared<resource_instruction>("i32",v));
@@ -1889,5 +1878,6 @@ std::shared_ptr<type_instruction> nety(std::any v){
     }
 
 }
+*/
 
 #endif

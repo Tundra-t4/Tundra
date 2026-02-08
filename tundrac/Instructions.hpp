@@ -8,6 +8,7 @@
 #include "Interpreter.hpp"
 #ifndef INSTRUCTIONS
 #define INSTRUCTIONS
+#include <filesystem>
 class Instruct {
     public:
     std::shared_ptr<function_instruction> mainfn;
@@ -17,15 +18,122 @@ class Instruct {
 
     }
 
+    std::shared_ptr<Type> resolveType(const std::shared_ptr<ASTNode>& node){
+        if (!node){
+            return TYR.get_void();
+        }
+        if (node->typeinfo){
+            return node->typeinfo;
+        }
+        if (auto id = std::dynamic_pointer_cast<IdentifierNode>(node)){
+            auto ty = TYR.get_type(id->getValue());
+            if (ty){
+                return ty;
+            }
+        }
+        if (auto pn = std::dynamic_pointer_cast<PointerNode>(node)){
+            return std::make_shared<PointerType>(resolveType(pn->getPointee()),pn->isBorrowed());
+        }
+        if (auto tn = std::dynamic_pointer_cast<TupleNode>(node)){
+            std::vector<std::shared_ptr<Type>> elems;
+            for (auto& v : tn->getValue()){
+                elems.push_back(resolveType(v.second));
+            }
+            return std::make_shared<TupleType>(elems);
+        }
+        if (auto tsl = std::dynamic_pointer_cast<TypeSafeListNode>(node)){
+            auto elem = resolveType(tsl->getType());
+            return std::make_shared<ArrayType>(elem,tsl->getValue().size());
+        }
+        if (auto tsli = std::dynamic_pointer_cast<TSLInitNode>(node)){
+            auto elem = resolveType(tsli->getExpr());
+            if (auto iln = std::dynamic_pointer_cast<IntLiteralNode>(tsli->getBody())){
+                return std::make_shared<ArrayType>(elem,static_cast<size_t>(iln->getValue()));
+            }
+            return std::make_shared<ArrayType>(elem);
+        }
+        if (auto mfn = std::dynamic_pointer_cast<MappedFunctionNode>(node)){
+            auto fnnargs = mfn->getParameters();
+            auto ftty = SCAST<FunctionType>(mfn->typeinfo);
+            std::vector<std::shared_ptr<Type>> params;
+            for (auto& order : mfn->getParamOrder()){
+                auto it = fnnargs.find(order.second);
+                if (it != fnnargs.end()){
+                    params.push_back(resolveType(it->second));
+                }
+            }
+            auto retty = ftty->return_type();
+            return std::make_shared<FunctionType>(params,retty,false);
+        }
+        return TYR.get_void();
+    }
+
+    std::shared_ptr<type_instruction> typeInstFromType(const std::shared_ptr<Type>& type){
+        return std::make_shared<type_instruction>(type);
+    }
+
+    std::shared_ptr<type_instruction> typeInst(const std::shared_ptr<ASTNode>& node){
+        return typeInstFromType(resolveType(node));
+    }
+
+    std::shared_ptr<Type> unwrapFunctionType(const std::shared_ptr<Type>& type){
+        if (!type){
+            return TYR.get_void();
+        }
+        if (type->is_function()){
+            return type;
+        }
+        if (type->is_pointer()){
+            auto ptr = std::dynamic_pointer_cast<PointerType>(type);
+            if (ptr && ptr->pointee()->is_function()){
+                return ptr->pointee();
+            }
+        }
+        return type;
+    }
+
+    std::string memberName(const std::shared_ptr<ASTNode>& node){
+        if (auto id = std::dynamic_pointer_cast<IdentifierNode>(node)){
+            return id->getValue();
+        }
+        if (auto sln = std::dynamic_pointer_cast<StringLiteralNode>(node)){
+            return sln->getValue();
+        }
+        return "";
+    }
+
+    bool parseMemberIndex(const std::string& name,int& out){
+        if (name.empty()){
+            return false;
+        }
+        for (auto c : name){
+            if (!std::isdigit(static_cast<unsigned char>(c))){
+                return false;
+            }
+        }
+        try {
+            out = std::stoi(name);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
     std::shared_ptr<Instruction> handleILN(std::shared_ptr<IntLiteralNode> in){
-        return std::make_shared<resource_instruction>(std::string("i32"),in->getValue());
+        auto ty = in->typeinfo ? in->typeinfo : TYR.get_i32();
+        return std::make_shared<resource_instruction>(ty,in->getValue());
     }
     std::shared_ptr<Instruction> handleObject(std::shared_ptr<ONode> obj){
-        return std::make_shared<resource_instruction>(std::string(obj->getValue().getType()),obj->getValue().GetStore());
+        std::shared_ptr<Type> ty = obj->typeinfo;
+        if (!ty){
+            ty = TYR.get_type(obj->getValue().getType());
+        }
+        return std::make_shared<resource_instruction>(ty,obj->getValue().GetStore());
     }
 
     std::shared_ptr<Instruction> handleSLN(std::shared_ptr<StringLiteralNode> sln){
-        return std::make_shared<resource_instruction>(std::string("RawString"),sln->getValue());
+        auto ty = sln->typeinfo ? sln->typeinfo : TYR.get_string();
+        return std::make_shared<resource_instruction>(ty,sln->getValue());
     }
 
     std::shared_ptr<block_instruction> handleBlock(std::shared_ptr<BlockNode> bn,bool ismain=false){
@@ -33,9 +141,11 @@ class Instruct {
 
         for (auto& stat : bn->getStatements()){
 
-            auto ptr = instruct(stat);
-            if (ptr){
-                insts.push_back(ptr);
+            auto statement = instruct(stat);
+            if (statement){
+                insts.push_back(statement);
+            } else {
+                logat("Invalid statement","handleBlock");
             }
         }
         return std::make_shared<block_instruction>(ismain,insts);
@@ -86,17 +196,15 @@ class Instruct {
             return dummyinstructions[IN->getValue()];
         }
         std::shared_ptr<load_instruction> linst;
-        if (forwardscplex.find(IN->id) != forwardscplex.end()){
-            linst = std::make_shared<load_instruction>(std::any_cast<std::string>(forwardscplex[IN->id]),isassignflag);
-        } else {
-            linst = std::make_shared<load_instruction>(IN->getValue(),isassignflag);
-        }
+
+        linst = std::make_shared<load_instruction>(IN->getValue(),isassignflag);
+        
         
         logat("Received " + linst->getName() ,"Ins.hI");
         return linst;
     }
     std::shared_ptr<Instruction> handleOperator(std::shared_ptr<BinOP> ON){
-        return std::make_shared<operation_instruction>(instruct(ON->getleft()),instruct(ON->getright()),ON->getValue());
+        return std::make_shared<operation_instruction>(instruct(ON->getLeft()),instruct(ON->getRight()),ON->getValue());
     }
 
     std::shared_ptr<Instruction> handleExtern(std::shared_ptr<ExternNode> EN){
@@ -107,11 +215,19 @@ class Instruct {
         for (int i = 0; i != vecnode.size();i++){
             auto fn = std::dynamic_pointer_cast<MappedFunctionNode>(vecnode[i]);
             std::vector<std::shared_ptr<Instruction>> args;
-            auto fnnargs = fn->getValue();
-            std::shared_ptr<Instruction> returnty = instruct(fnnargs["-!retty"]);
-            fnnargs.erase("-!retty");
-            for (auto & arg : fnnargs){
-                args.push_back(instruct(arg.second));
+            auto fnnargs = fn->getParameters();
+            std::shared_ptr<Instruction> returnty = typeInst(fn->ReturnType);
+            if (fn->getParamOrder().size() != 0){
+                for (auto& argn : fn->getParamOrder()){
+                    auto it = fnnargs.find(argn.second);
+                    if (it != fnnargs.end()){
+                        args.push_back(typeInst(it->second));
+                    }
+                }
+            } else {
+                for (auto & arg : fnnargs){
+                    args.push_back(typeInst(arg.second));
+                }
             }
             fninsts.push_back(std::make_shared<declare_function_instruction>(fnname[i],args,returnty,in(fnname[i],isvdic)));
 
@@ -126,23 +242,41 @@ class Instruct {
             bc++;
             anon = true;
         }
-        bool isnoneret = std::any_cast<bool>(forwardscplex2[MFN->id]);
+        if (!MFN->typeinfo){
+            throw std::runtime_error("Invalid type info");
+        }
+        auto ftty = SCAST<FunctionType>(MFN->typeinfo);
+        if (!ftty){
+            throw std::runtime_error("Invalid type info");
+        }
  
         std::vector<std::shared_ptr<Instruction>> args;
-        auto fnnargs = MFN->getValue();
-        auto retty = fnnargs["-!retty"];
+        auto fnnargs = MFN->getParameters();
         auto intes = MFN->getinternals();
-        std::shared_ptr<Instruction> returnty = instruct(fnnargs["-!retty"]);
-        fnnargs.erase("-!retty");
-        for (auto & arg : fnnargs){
-            if (arg.first == "self" && MFN->isselfptr){
-                args.push_back(std::make_shared<pointer_instruction>(instruct(arg.second)));
-            } else {
-            args.push_back(instruct(arg.second));
+        auto rettyType = ftty->return_type();
+        bool isnoneret = rettyType ? rettyType->is_void() : false;
+        std::shared_ptr<Instruction> returnty = typeInstFromType(rettyType);
+        logat("Return ty is : " + std::to_string(static_cast<int>(rettyType->kind())),"inst.hMFN");
+        if (ftty && ftty->param_types().size() == MFN->getParamOrder().size()){
+            int idx = 0;
+            for (auto& argn : MFN->getParamOrder()){
+                args.push_back(typeInstFromType(ftty->param_types()[idx]));
+                idx++;
+            }
+        } else if (MFN->getParamOrder().size() != 0){
+            for (auto& argn : MFN->getParamOrder()){
+                auto it = fnnargs.find(argn.second);
+                if (it != fnnargs.end()){
+                    args.push_back(typeInst(it->second));
+                }
+            }
+        } else {
+            for (auto & arg : fnnargs){
+                args.push_back(typeInst(arg.second));
             }
         }
         std::vector<std::string> argnames;
-        for (auto& argn : MFN->gettick()){
+        for (auto& argn : MFN->getParamOrder()){
             if (intes.find(argn.second) != intes.end()){
                 argnames.push_back(intes[argn.second]);
             } else {
@@ -150,13 +284,7 @@ class Instruct {
                 argnames.push_back(argn.second);
             }
         }
-        std::shared_ptr<BlockNode> blk;
-        if (anon && std::dynamic_pointer_cast<BlockNode>(MFN->getBody())->StatementsLen() == 0){
-            blk = std::dynamic_pointer_cast<BlockNode>(MFN->getBody());
-            blk->addStatement(std::make_shared<RetNode>(std::make_shared<IdentifierNode>(getTypeName(forwardscplex[MFN->id]))));
-        } else {
-            blk = std::dynamic_pointer_cast<BlockNode>(MFN->getBody());
-        }
+        std::shared_ptr<BlockNode> blk = std::dynamic_pointer_cast<BlockNode>(MFN->getBody());
         
         return std::make_shared<function_instruction>(name,returnty,args,std::dynamic_pointer_cast<block_instruction>(instruct(blk)),false,false,false,argnames,"",isnoneret);
     }
@@ -165,7 +293,9 @@ class Instruct {
         mangle_rule = CN->getValue();
         std::vector<std::shared_ptr<Instruction>> insts;
         for (auto& inst : CN->getPub()){
-            insts.push_back(instruct(inst));
+            if (inst){
+                insts.push_back(instruct(inst));
+            }
         }
         mangle_rule = pm;
         return std::make_shared<chain_instruction>(insts);
@@ -175,22 +305,38 @@ class Instruct {
             if (auto MFN = std::dynamic_pointer_cast<MappedFunctionNode>(aas->getValue())){
                 auto name = aas->getVarName();
                 std::vector<std::shared_ptr<Instruction>> args;
-                auto fnnargs = MFN->getValue();
+                auto fnnargs = MFN->getParameters();
                 auto internals = MFN->getinternals();
-                std::shared_ptr<Instruction> returnty = instruct(fnnargs["-!retty"]);
-                fnnargs.erase("-!retty");
-                for (auto & arg : fnnargs){
-                    args.push_back(instruct(arg.second));
+                auto ftty = SCAST<FunctionType>(MFN->typeinfo);
+                auto rettyType = ftty->return_type();
+                std::shared_ptr<Instruction> returnty = typeInstFromType(rettyType);
+                if (ftty && ftty->param_types().size() == MFN->getParamOrder().size()){
+                    int idx = 0;
+                    for (auto& argn : MFN->getParamOrder()){
+                        args.push_back(typeInstFromType(ftty->param_types()[idx]));
+                        idx++;
+                    }
+                } else if (MFN->getParamOrder().size() != 0){
+                    for (auto& argn : MFN->getParamOrder()){
+                        auto it = fnnargs.find(argn.second);
+                        if (it != fnnargs.end()){
+                            args.push_back(typeInst(it->second));
+                        }
+                    }
+                } else {
+                    for (auto & arg : fnnargs){
+                        args.push_back(typeInst(arg.second));
+                    }
                 }
                 std::vector<std::string> argnames;
-                for (auto& argn : MFN->gettick()){
+                for (auto& argn : MFN->getParamOrder()){
                     if (internals.find(argn.second) == internals.end()){
                         argnames.push_back(argn.second);
                     } else {
                         argnames.push_back(internals[argn.second]);
                     }
                 }
-                bool isnoneret = std::any_cast<bool>(forwardscplex2[MFN->id]);
+                bool isnoneret = rettyType ? rettyType->is_void() : false;
                 /*if (!AP.has("-bundle") && result != "package"){
                     return std::make_shared<function_instruction>(name,returnty,args,std::dynamic_pointer_cast<block_instruction>(instruct(MFN->getBody())),false,true,false,argnames,"",isnoneret);
                 } else {*/
@@ -206,66 +352,17 @@ class Instruct {
     }
 
     std::shared_ptr<Instruction> handleCall(std::shared_ptr<CallNode> CN){
-
-
-        auto db = std::any_cast<tsl::ordered_map<std::string,std::any>>(forwardscplex[CN->id]);
-        auto clr = std::any_cast<std::string>(db["type"]);
-        if (clr == "mappedfunction" || clr == "tag"){
-
-        std::vector<std::shared_ptr<Instruction>> args; // need to forward the mapped function
-        tsl::ordered_map<int,std::shared_ptr<ASTNode>> finalargs; // sincerely think about this before doing it lmao
-        tsl::ordered_map<std::string,std::shared_ptr<ASTNode>> finalstrargs; 
-        auto MFN = std::any_cast<MappedFunction>(db["mfn"]);
-        auto CNargs = CN->getExpr();
-        if (clr == "tag"){
-            CNargs = std::any_cast<tsl::ordered_map<int, std::shared_ptr<ASTNode>>>(db["astack"]);
+        std::vector<std::shared_ptr<Instruction>> args;
+        auto CNargs = CN->getArgs();
+        for (auto& arg : CNargs){
+            args.push_back(instruct(arg.second));
         }
         auto inserts = CN->getinserts();
-        auto tick = MFN.gettick();
-        auto strarg = MFN.getargs();
-        for (int i = 0;i != CNargs.size();i++){
-            if (tick.find(i) != tick.end()){
-                finalstrargs[tick[i]] = CNargs[i];
-            } else {
-                finalstrargs["arg" + std::to_string(i)] = CNargs[i];
-            }
-        }
         for (auto& insert : inserts){
-            finalstrargs[insert.first] = std::move(insert.second);
+            args.push_back(instruct(insert.second));
         }
-        int i = 0;
-        for (auto& strarg: finalstrargs){
-            bool checker = false;
-            reversefind<int,std::string>(tick,strarg.first,&checker);
-            if (checker){
-                auto v = *reversefind<int,std::string>(tick,strarg.first);
-
-                finalargs[v] = std::move(strarg.second);
-            } else {
-                finalargs[i] = std::move(strarg.second);
-            }
-            i++;
-        }
-        for (int i = 0;i != finalargs.size();i++){
-            if (tick[i] == "self" && MFN.isselfptr){
-                auto inst = instruct(finalargs[i]);
-                if (auto li = std::dynamic_pointer_cast<load_instruction>(inst)){
-                    li->setGiveBackPtr(true);
-                    args.push_back(li);
-                } else {
-                    args.push_back(inst);
-                }
-
-                
-            } else {
-                args.push_back(instruct(finalargs[i]));
-            }
-            
-        }
-        //if (MFN) push variadic back
-        return std::make_shared<call_instruction>(instruct(CN->getBody()),args,std::any_cast<std::shared_ptr<type_instruction>>(db["fty"]));
-        }
-        return std::make_shared<nop_instruction>();
+        auto fty = typeInstFromType(unwrapFunctionType(resolveType(CN->getCallee())));
+        return std::make_shared<call_instruction>(instruct(CN->getCallee()),args,fty);
     }
     std::shared_ptr<Instruction> handleDecorator(std::shared_ptr<DecoratorNode> DN){
         if (auto CN = std::dynamic_pointer_cast<CallNode>(DN->getClr())){
@@ -283,36 +380,46 @@ class Instruct {
     }
 
     std::shared_ptr<Instruction> handleRet(std::shared_ptr<RetNode> RN){
+        if (!RN->getValue()){
+            return std::make_shared<return_instruction>(typeInstFromType(TYR.get_void()));
+        }
         return std::make_shared<return_instruction>(instruct(RN->getValue()));
     }
 
 
     std::shared_ptr<Instruction> handleIf(std::shared_ptr<IFNode> IFN,bool isassign = false){
-        auto elifs = IFN->getElses();
+        auto elifs = IFN->getElifBranch();
         std::vector<std::shared_ptr<if_instruction>> insts = {};
         for (auto& elif : elifs){
-            insts.push_back(std::make_shared<if_instruction>(instruct(elif.second->getExpr()),std::dynamic_pointer_cast<block_instruction>(instruct(elif.second->getBody()))));
+            insts.push_back(std::make_shared<if_instruction>(instruct(elif.second->get_condition()),std::dynamic_pointer_cast<block_instruction>(instruct(elif.second->getBody()))));
         }
-        if (IFN->getNot()){
-        return std::make_shared<if_instruction>(instruct(IFN->getMain()->getExpr()),std::dynamic_pointer_cast<block_instruction>(instruct(IFN->getMain()->getBody())),std::dynamic_pointer_cast<block_instruction>(instruct(IFN->getNot()->getBody())),insts,isassign || inT<int>(IFN->id,isused));
+        if (IFN->getElseBranch()){
+        return std::make_shared<if_instruction>(instruct(IFN->getMainBranch()->get_condition()),std::dynamic_pointer_cast<block_instruction>(instruct(IFN->getMainBranch()->getBody())),std::dynamic_pointer_cast<block_instruction>(instruct(IFN->getElseBranch()->getBody())),insts,isassign || inT<int>(IFN->id,isused));
         } else {
-            return std::make_shared<if_instruction>(instruct(IFN->getMain()->getExpr()),std::dynamic_pointer_cast<block_instruction>(instruct(IFN->getMain()->getBody())),nullptr,insts,isassign || inT<int>(IFN->id,isused));
+            return std::make_shared<if_instruction>(instruct(IFN->getMainBranch()->get_condition()),std::dynamic_pointer_cast<block_instruction>(instruct(IFN->getMainBranch()->getBody())),nullptr,insts,isassign || inT<int>(IFN->id,isused));
         }
     }
      std::shared_ptr<Instruction> handleWhile(std::shared_ptr<WhileNode> WN,bool isassign=false){
-        return std::make_shared<while_instruction>(instruct(WN->getExpr()->getExpr()),std::dynamic_pointer_cast<block_instruction>(instruct(WN->getExpr()->getBody())),isassign || inT<int>(WN->id,isused));
+        return std::make_shared<while_instruction>(instruct(WN->getLoopExpr()->get_condition()),std::dynamic_pointer_cast<block_instruction>(instruct(WN->getLoopExpr()->getBody())),isassign || inT<int>(WN->id,isused));
      }
 
 
     std::shared_ptr<Instruction> handlePointer(std::shared_ptr<PointerNode> PN){
-        if (!PN->getBorrow()){
-            return std::make_shared<pointer_instruction>(instruct(PN->getExpr()),false);
+        if (!PN->isBorrowed()){
+            return std::make_shared<pointer_instruction>(instruct(PN->getPointee()),false);
         } else {
-            return std::make_shared<borrowed_pointer_instruction>(instruct(PN->getExpr()));
+            return std::make_shared<borrowed_pointer_instruction>(instruct(PN->getPointee()));
         }
     }
     std::shared_ptr<Instruction> handleDereference(std::shared_ptr<DerefNode> DN){
-        return std::make_shared<dereference_instruction>(instruct(DN->getExpr()),forwards[DN->id]);
+        auto derefType = resolveType(DN);
+        if (derefType && derefType->is_pointer()){
+            auto ptr = std::dynamic_pointer_cast<PointerType>(derefType);
+            if (ptr){
+                derefType = ptr->pointee();
+            }
+        }
+        return std::make_shared<dereference_instruction>(instruct(DN->getPointer()),typeInstFromType(derefType));
     }
 
     std::shared_ptr<Instruction> handlePointerStore(std::shared_ptr<ModifyPtrNode> MPN){
@@ -320,8 +427,14 @@ class Instruct {
     }
     std::shared_ptr<Instruction> handleStructDecl(std::string name,std::shared_ptr<StructDeclNode> SDN){
         std::vector<std::shared_ptr<Instruction>> fields;
-        for (auto& field : SDN->getValue()){
-            fields.push_back(instruct(field.second));
+        std::vector<StructType::Field> typefields;
+        for (auto& field : SDN->getFields()){
+            auto ftype = resolveType(field.second);
+            typefields.push_back({field.first,ftype});
+            fields.push_back(typeInstFromType(ftype));
+        }
+        if (!TYR.has_type(name)){
+            TYR.register_type(name,std::make_shared<StructType>(name,typefields));
         }
         return std::make_shared<struct_decl_instruction>(name,fields);
     }
@@ -329,62 +442,55 @@ class Instruct {
     std::shared_ptr<Instruction> handleStructInstance(std::shared_ptr<StructInstanceNode> SIN){
         std::vector<std::shared_ptr<Instruction>> fields;
         std::vector<std::string> sfields;
-        for (auto& field : SIN->getValue()){
+        for (auto& field : SIN->getFields()){
             fields.push_back(instruct(field.second));
             sfields.push_back(field.first);
         }
-        return std::make_shared<struct_instance_instruction>(instruct(SIN->getBase()),fields,sfields,false,std::any_cast<int>(forwardscplex[SIN->id]));
+        return std::make_shared<struct_instance_instruction>(typeInst(SIN->getBase()),fields,sfields,false,SIN->id);
     }
     std::shared_ptr<Instruction> handleExprAssign(std::shared_ptr<ExprAssignNode> EAN){
-        return std::make_shared<alt_assign_instruction>(instruct(EAN->getVarName()),instruct(EAN->getValue()));
+        return std::make_shared<alt_assign_instruction>(instruct(EAN->getAssignee()),instruct(EAN->getValue()));
     }
     std::shared_ptr<Instruction> handleMemberAccess(std::shared_ptr<MemAccNode> MAN,bool privassign=false){
-        auto db = std::any_cast<tsl::ordered_map<std::string,std::any>>(forwardscplex[MAN->id]);
-        std::string accessty = std::any_cast<std::string>(db["type"]);
-        int vid = std::any_cast<int>(db["vid"]);
-        if (MAN->getAssign()){
+        if (MAN->isAssignment()){
             MAN->setAssign(false); // we're done with wrapping it
-            return std::make_shared<alt_assign_instruction>(handleMemberAccess(MAN,true),instruct(MAN->getAssignv()));
+            return std::make_shared<alt_assign_instruction>(handleMemberAccess(MAN,true),instruct(MAN->getAssignValue()));
         }
-        if (accessty == "structI"){
-        std::string sity = std::any_cast<std::string>(db["siaccesstype"]);
-        if (sity == "member"){
-        std::vector<std::shared_ptr<type_instruction>> vec{std::any_cast<std::shared_ptr<type_instruction>>(db["structI"]),std::any_cast<std::shared_ptr<type_instruction>>(db["memtype"])};
-        if (auto sln = std::dynamic_pointer_cast<StringLiteralNode>(MAN->getNxt())){
-            return std::make_shared<access_struct_member_instruction>(instruct(MAN->getValue()),sln->getValue(),std::any_cast<int>(db["id"]),vec,privassign);
-        } else  if (auto M2 = std::dynamic_pointer_cast<MemAccNode>(MAN->getNxt())){
-            return std::make_shared<access_struct_member_instruction>(handleMemberAccess(M2),std::dynamic_pointer_cast<StringLiteralNode>(M2->getNxt())->getValue(),std::any_cast<int>(db["id"]),vec,privassign);
+        auto baseInst = std::dynamic_pointer_cast<MemAccNode>(MAN->getValue())
+            ? handleMemberAccess(std::dynamic_pointer_cast<MemAccNode>(MAN->getValue()))
+            : instruct(MAN->getValue());
+        auto baseType = resolveType(MAN->getValue());
+        auto name = memberName(MAN->getNxt());
+        if (baseType && baseType->is_struct()){
+            auto structTy = std::dynamic_pointer_cast<StructType>(baseType);
+            int fieldIndex = 0;
+            std::shared_ptr<Type> fieldType = TYR.get_void();
+            if (structTy){
+                int idx = 0;
+                for (const auto& field : structTy->fields()){
+                    if (field.name == name){
+                        fieldIndex = idx;
+                        fieldType = field.type;
+                        break;
+                    }
+                    idx++;
+                }
+            }
+            std::vector<std::shared_ptr<type_instruction>> vec{typeInstFromType(baseType),typeInstFromType(fieldType)};
+            return std::make_shared<access_struct_member_instruction>(baseInst,name,fieldIndex,vec,privassign);
         }
-        } else { // cons or method
-        
-        if (auto sln = std::dynamic_pointer_cast<StringLiteralNode>(MAN->getNxt())){
-            return std::make_shared<access_extend_instruction>(instruct(MAN->getValue()),sln->getValue(),sity == "method",sity == "method" ? 0 : vid);
-        } else  if (auto M2 = std::dynamic_pointer_cast<MemAccNode>(MAN->getNxt())){
-            return std::make_shared<access_extend_instruction>(handleMemberAccess(M2),std::dynamic_pointer_cast<StringLiteralNode>(M2->getNxt())->getValue(),sity == "method",sity == "method" ? 0 : vid);
+        if (baseType && baseType->kind() == TypeKind::TUPLE){
+            auto tupleTy = std::dynamic_pointer_cast<TupleType>(baseType);
+            int idx = 0;
+            parseMemberIndex(name,idx);
+            std::shared_ptr<Type> elemType = TYR.get_void();
+            if (tupleTy && idx >= 0 && idx < static_cast<int>(tupleTy->elements().size())){
+                elemType = tupleTy->elements()[idx];
+            }
+            std::vector<std::shared_ptr<type_instruction>> vec{typeInstFromType(baseType),typeInstFromType(elemType)};
+            return std::make_shared<access_tuple_member_instruction>(baseInst,idx,vec);
         }
-
-        }
-        } else if (accessty == "tuple"){
-        if (db.find("inferred") != db.end()){
-            return instruct(std::any_cast<std::shared_ptr<MemAccNode>>(db["inferred"]));
-        }
-        std::vector<std::shared_ptr<type_instruction>> vec{std::any_cast<std::shared_ptr<type_instruction>>(db["tuple"]),std::any_cast<std::shared_ptr<type_instruction>>(db["memtype"])};
-        if (auto sln = std::dynamic_pointer_cast<StringLiteralNode>(MAN->getNxt())){
-            return std::make_shared<access_tuple_member_instruction>(instruct(MAN->getValue()),std::any_cast<int>(db["index"]),vec);
-        } else  if (auto M2 = std::dynamic_pointer_cast<MemAccNode>(MAN->getNxt())){
-            return std::make_shared<access_tuple_member_instruction>(handleMemberAccess(M2),std::any_cast<int>(db["id"]),vec);
-        }
-        } else if (accessty == "module"){
-        auto mod = std::any_cast<Module>(db["mod"]);
-        
-        if (auto sln = std::dynamic_pointer_cast<StringLiteralNode>(MAN->getNxt())){
-            return std::make_shared<load_instruction>(mod.hash + sln->getValue());
-        } // module within a module is a nogo jose;
-        
-        } else if (accessty == "tag"){
-            auto sln = std::dynamic_pointer_cast<StringLiteralNode>(MAN->getNxt());
-            return std::make_shared<get_tag_instruction>(std::dynamic_pointer_cast<load_instruction>(handleIdentifier(std::make_shared<IdentifierNode>(sln->getValue()))),std::any_cast<std::shared_ptr<type_instruction>>(db["callertype"]));
-        }
+        return std::make_shared<nop_instruction>();
     }
 
     std::shared_ptr<Instruction> handleTuple(std::shared_ptr<TupleNode> TN){
@@ -396,7 +502,7 @@ class Instruct {
     }
 
     std::shared_ptr<Instruction> handleCast(std::shared_ptr<CastNode> CN){
-        auto tinst = forwards[CN->id];
+        auto tinst = typeInst(CN->getDest());
         return std::make_shared<cast_instruction>(instruct(CN->getValue()),tinst);
     }
 
@@ -409,38 +515,38 @@ class Instruct {
     }
     std::shared_ptr<Instruction> handleTSLInit(std::shared_ptr<TSLInitNode> TSLIN){
         std::vector<std::shared_ptr<Instruction>> elems;
-        auto sz = std::any_cast<int32_t>(forwardscplex[TSLIN->id]);
-        auto size = sz;
+        int32_t sz = 0;
+        auto arrType = std::dynamic_pointer_cast<ArrayType>(resolveType(TSLIN));
+        if (arrType && arrType->size().has_value()){
+            sz = static_cast<int32_t>(arrType->size().value());
+        } else if (auto iln = std::dynamic_pointer_cast<IntLiteralNode>(TSLIN->getBody())){
+            sz = iln->getValue();
+        }
 
         return std::make_shared<init_array_instruction>(instruct(TSLIN->getExpr()),sz);
     }
     //std::vector<std::shared_ptr<type_instruction>>
     std::shared_ptr<Instruction> handleIndex(std::shared_ptr<IndexNode> IN){
-        auto db = std::any_cast<tsl::ordered_map<std::string,std::any>>(forwardscplex[IN->id]);
-        auto vec = std::any_cast<std::vector<std::shared_ptr<type_instruction>>>(db["arrity"]);
-        std::string ty = std::any_cast<std::string>(db["ty"]);
-        if (ty == "arr"){
-        return std::make_shared<access_array_instruction>(instruct(IN->getValue()),vec,instruct(IN->getIndex()));
-        } else if (ty == "ptr"){
+        auto baseType = resolveType(IN->getValue());
+        if (baseType && baseType->is_array()){
+            auto arr = std::dynamic_pointer_cast<ArrayType>(baseType);
+            auto elem = arr ? arr->element_type() : TYR.get_void();
+            std::vector<std::shared_ptr<type_instruction>> vec{typeInstFromType(baseType),typeInstFromType(elem)};
+            return std::make_shared<access_array_instruction>(instruct(IN->getValue()),vec,instruct(IN->getIndex()));
+        } else if (baseType && baseType->is_pointer()){
+            auto ptr = std::dynamic_pointer_cast<PointerType>(baseType);
+            auto elem = ptr ? ptr->pointee() : TYR.get_void();
+            std::vector<std::shared_ptr<type_instruction>> vec{typeInstFromType(elem),typeInstFromType(elem)};
             return std::make_shared<access_pointer_instruction>(instruct(IN->getValue()),vec,instruct(IN->getIndex()));
         }
+        return std::make_shared<nop_instruction>();
     }
     std::shared_ptr<Instruction> handleExtend(std::shared_ptr<ModNode> MN){
-        auto db = std::any_cast<tsl::ordered_map<std::string,std::any>>(forwardscplex[MN->id]);
-        auto extty = std::any_cast<std::string>(db["type"]);
-        if (extty == ""){
         std::vector<std::shared_ptr<Instruction>> exts;
         for (auto& ext: MN->getStates()){
             exts.push_back(instruct(ext));
         }
         return std::make_shared<extend_instruction>(instruct(MN->getValue()),exts);
-        } else if (extty == "tag"){
-            std::vector<std::shared_ptr<Instruction>> exts;
-            for (auto& ext: MN->getStates()){
-                exts.push_back(std::make_shared<tag_instruction>(std::dynamic_pointer_cast<function_instruction>(instruct(ext))));
-            }
-            return std::make_shared<chain_instruction>(exts);
-        }
     }
     std::shared_ptr<Instruction> handleSZ(std::shared_ptr<SizeOfNode> SON){
         return std::make_shared<size_of_instruction>(instruct(SON->getValue()));
@@ -454,10 +560,8 @@ class Instruct {
         return inst;
     }
     std::shared_ptr<Instruction> handleTY(std::shared_ptr<TypeIDNode> TIDN){
-        std::shared_ptr<type_instruction> ty = nullptr;
-        if (forwards.find(TIDN->id) != forwards.end()){
-            ty = forwards[TIDN->id];
-        }
+        auto ttype = resolveType(TIDN->getValue());
+        std::shared_ptr<type_instruction> ty = ttype ? typeInstFromType(ttype) : nullptr;
         return std::make_shared<type_id_instruction>(instruct(TIDN->getValue()),ty);
     }
     std::unordered_map<std::string,std::shared_ptr<Instruction>> asmUTIL(std::unordered_map<std::string,std::shared_ptr<ASTNode>> v){
@@ -469,7 +573,7 @@ class Instruct {
 
     }
     std::shared_ptr<Instruction> handleASM(std::shared_ptr<ASMNode> ASMN){
-        return std::make_shared<asm_instruction>(std::make_shared<resource_instruction>("ASMSTR",ASMN->ASMStr),ASMN->regs,asmUTIL(ASMN->in),asmUTIL(ASMN->out),asmUTIL(ASMN->inout));
+        return std::make_shared<asm_instruction>(std::make_shared<resource_instruction>(TYR.get_string(),ASMN->ASMStr),ASMN->regs,asmUTIL(ASMN->in),asmUTIL(ASMN->out),asmUTIL(ASMN->inout));
     }
     std::shared_ptr<Instruction> handleP2I(std::shared_ptr<PtrtointNode> PTIN){
         return std::make_shared<ptrtoint_instruction>(instruct(PTIN->getValue()));
@@ -484,7 +588,7 @@ class Instruct {
     }
 
     std::shared_ptr<Instruction> handleModule(std::shared_ptr<ImportNode> ImN){
-        Module mod = std::any_cast<Module>(forwardscplex[ImN->id]);
+        Module mod(ImN->getName());
         std::vector<std::shared_ptr<Instruction>> insts;
         auto from = ImN->getFrom();
         for (auto& method : mod.methods){
@@ -492,11 +596,11 @@ class Instruct {
             auto vec = mod.MNodes[method.first];
             std::vector<std::shared_ptr<Instruction>> args;
             
-            std::shared_ptr<Instruction> retty = instruct(vec[vec.size()-1]);
+            std::shared_ptr<Instruction> retty = typeInst(vec[vec.size()-1]);
             vec.pop_back();
 
             for (auto& arg: vec){
-                args.push_back(instruct(arg));
+                args.push_back(typeInst(arg));
             }
 
 
@@ -512,6 +616,20 @@ class Instruct {
         return std::make_shared<chain_instruction>(insts);
     }
     std::shared_ptr<Instruction> instruct(std::shared_ptr<ASTNode> node){
+        
+        auto inst = _instruct(node);
+        if (inst){
+            inst->typeinfo = node->typeinfo;
+        } else {
+            logat("Typeinfo: " + std::to_string(static_cast<int>(node->typeinfo->kind())),"instruct:badinst");
+            logat("Node: " + std::to_string(node->get_node_type_id()),"instruct:badinst");
+            //*(int*)0 = 1;
+            /*throw std::runtime_error("Bad Instruction!");*/
+            return nullptr;
+        }
+        return inst;
+    }
+    std::shared_ptr<Instruction> _instruct(std::shared_ptr<ASTNode> node){
         if (auto in = std::dynamic_pointer_cast<IntLiteralNode>(node)){
             return handleILN(in);
         } else if (auto Object = std::dynamic_pointer_cast<ONode>(node)){
@@ -584,25 +702,29 @@ class Instruct {
             return handleConv(CN);
         } else if (auto DRN = std::dynamic_pointer_cast<DoubleRefNode>(node)){
             return instruct(*DRN->getRef());
-        } else {
+        } else if (auto EN = std::dynamic_pointer_cast<ErrorNode>(node)){
+            return std::make_shared<nop_instruction>();
+        } 
+        else {
             if (typeid(node) != typeid(std::make_shared<ASTNode>())){
             std::cout << "Unknown Node" << std::endl;
             }
+            logat("Unknown Node","instruct");
             return nullptr;
         }
     }
-
+    TypeRegistry& TYR = TypeRegistry::instance();
     void finish(){
         std::unordered_map<std::string,bool> options = {};
         std::vector <std::shared_ptr<Instruction>> args;
 
         auto mainblock = handleBlock(rootblock,true);
-        mainblock->insts.push_back(std::make_shared<return_instruction>(std::make_shared<resource_instruction>(std::string("i32"),0)));
+        mainblock->insts.push_back(std::make_shared<return_instruction>(std::make_shared<resource_instruction>(TYR.get_i32(),0)));
         std::string mainfnname = "main";
-        if (AP.has("-bundle") || result == "package"){
+        if (AP.has("-bundle")){
             mainfnname = exports["t4hash"] + "main";
         }
-        mainfn = std::make_shared<function_instruction>(mainfnname,std::make_shared<resource_instruction>(std::string("i32"),0),args,mainblock,true,false,false);
+        mainfn = std::make_shared<function_instruction>(mainfnname,std::make_shared<type_instruction>(TYR.get_i32()),args,mainblock,true,false,false);
 
         Instructor instr(AP.values["compile"][0]);
         std::string target = "native";
@@ -690,7 +812,7 @@ class Instruct {
                 structure_clang += " -l" + l;
             }
         }
-        if (!AP.has("-nocc") && !AP.has("-bundle") && result != "package"){
+        if (!AP.has("-nocc") && !AP.has("-bundle")){
 
         //std::vector<std::string> objectpaths;
         auto linkdir = std::filesystem::absolute(outas + ".imports");
@@ -710,7 +832,7 @@ class Instruct {
         system(structure_clang.c_str());
         std::filesystem::remove_all(linkdir);
         }
-        if (AP.has("-bundle") || result == "package"){
+        if (AP.has("-bundle")){
             auto bundler = ObjectBundler();
             bundler.bundle(std::filesystem::absolute(output + ".o"),exports,std::filesystem::absolute(outas + ".t4"));
         }
@@ -726,52 +848,12 @@ class Instruct {
             std::filesystem::remove(std::filesystem::absolute(output + ".o"));
         }
   
-        println(green_block + fcircle + reset + " Finished build" + (warns == 0 ? "." : (" with " + std::to_string(warns) + " warnings.")));
+        println(Colors::GREEN + Symbols::FILLED_CIRCLE + Colors::RESET + " Finished build" + (warns == 0 ? "." : (" with " + std::to_string(warns) + " warnings.")));
         exit(0);
     }
     
 
-    /*std::string add(std::shared_ptr<ASTNode> node){
-        if (auto in = std::dynamic_pointer_cast<IntLiteralNode>(node)){
-            return handleILN(in);
-        } else if (auto Object = std::dynamic_pointer_cast<ONode>(node)){
-            return handleObject(Object);
-        } else if (auto StrLit = std::dynamic_pointer_cast<StringLiteralNode>(node)){
-            return handleSLN(StrLit);
-        } else if (auto AssignN = std::dynamic_pointer_cast<AssignNode>(node)){
-            return handleAssign(AssignN);
-        } else if (auto BN = std::dynamic_pointer_cast<BlockNode>(node)){
-            return handleBlock(BN);
-        } else if (auto EN = std::dynamic_pointer_cast<ExternNode>(node)){
-            return handleExtern(EN);
-        } else if (auto IN = std::dynamic_pointer_cast<IdentifierNode>(node)){
-            return handleIdentifier(IN);
-        } else if (auto PN = std::dynamic_pointer_cast<PointerNode>(node)){
-            return handlePTR(PN);
-        } else if (auto DN = std::dynamic_pointer_cast<DerefNode>(node)){
-            return handlederef(DN);
-        } else if (auto MPN = std::dynamic_pointer_cast<ModifyPtrNode>(node)){
-            return handlePTRassign(MPN);
-        } else if (auto OpNode = std::dynamic_pointer_cast<BinOP>(node)){
-            return handleOps(OpNode);
-        } else if (auto RN = std::dynamic_pointer_cast<RetNode>(node)){
-            return handleRet(RN);
-        } else if (auto PN = std::dynamic_pointer_cast<PubNode>(node)){
-            return handlePub(PN);
-        } else if (auto MAN = std::dynamic_pointer_cast<MemAccNode>(node)){
-            return handleMember(MAN);
-        } else if (auto SIN = std::dynamic_pointer_cast<StructInstanceNode>(node)){
-            return handleStructI("",SIN);
-        } else if (auto CN = std::dynamic_pointer_cast<CallNode>(node)){ // add type checking for CEXTFunction args
 
-            return handleCall(CN);
-        } else if (auto CN = std::dynamic_pointer_cast<CastNode>(node)){
-            return handleCast(CN);
-        } else {
-            println("Unknown node");
-            return "";
-        }
-    }*/
 
 
 
@@ -781,11 +863,11 @@ class Instruct {
         this->CScope = it;
 
     }
-    void setinte(std::shared_ptr<Interpreter> i){
+    /*void setinte(std::shared_ptr<Interpreter> i){
         this->inte = i;
-    }
+    }*/
     private:
-    std::shared_ptr<Interpreter> inte;
+    //std::shared_ptr<Interpreter> inte;
     std::string  lastid;
     std::vector<std::string> fnargs;
     int bc = 0;

@@ -44,7 +44,9 @@
 #include "llvm/IR/DerivedTypes.h"
 #include <sstream>
 #include <iostream>
-#include <ordered_map.h>
+#include "../tundrac/include/ordered_map.h"
+#include "typeheader.hpp"
+
 
 
 int tmp = 0;
@@ -189,8 +191,6 @@ emitInlineAsm(llvm::IRBuilder<> &builder,
     llvm::FunctionType *asmFTy = llvm::FunctionType::get(retType, paramTypes, false);
 
     // NOTE: LLVM’s inline assembly expects placeholders as $0, $1, ….
-    // If your template uses {0}, {1} etc., you should convert them before this call.
-    // For brevity we assume asmTemplate is already formatted appropriately.
     bool first = false;
     for (auto& v : inoutStr){
         constraintStr += (first ? "," : "") + std::string("=r,r");
@@ -311,8 +311,10 @@ std::string debugvectorToString(const std::vector<std::string>& vec) {
 std::unordered_map<int,std::vector<std::string>> extmap;
 std::unordered_map<std::string, std::vector<llvm::Value*>> mman;
 std::unordered_map<std::string, llvm::Value*> globals;
+std::unordered_map<std::string, std::shared_ptr<Type>> globalvartypes;
 std::unordered_map<std::string, std::vector<std::string>> mmanstr;
 std::unordered_map<std::string,llvm::Value*> strs;
+std::unordered_map<std::string, std::shared_ptr<Type>> vartypes;
 //std::unordered_map<std::string,std::vector<std::string>> linkedblocks;
 
 
@@ -521,9 +523,11 @@ class InstructionContainer{
 
 bool global_redo = false;
 struct Instruction {
+    public:
     bool stored=false;
     bool givebackptr = false;
     bool givebackptrpair = true;
+    std::shared_ptr<Type> typeinfo;
     std::shared_ptr<InstructionContainer> storedv = nullptr;
     virtual InstructionContainer execute(llvm::LLVMContext &context, llvm::Module &module, MetadataIRBuilder &builder,
                          std::unordered_map<std::string, llvm::Value *> &variables , std::unordered_map<std::string, llvm::Function *> & functions)  = 0;
@@ -581,113 +585,95 @@ struct value_instruction :  public Instruction {
 };
 
 struct resource_instruction : public Instruction {
-    std::string type;
+    std::shared_ptr<Type> type;
     std::any value;
 
-    resource_instruction(const std::string& type, std::any v) : type(type), value(v) {}
+    resource_instruction(std::shared_ptr<Type> type, std::any v) : type(type), value(v) {}
 
     InstructionContainer execute(llvm::LLVMContext & ctx, llvm::Module & mod, MetadataIRBuilder &builder,
                  std::unordered_map<std::string, llvm::Value *> &variables, std::unordered_map<std::string, llvm::Function *> & functions) override {
-        std::vector<std::string> inttypes = {
-        "i8", "i16", "i32", "i64",    // Signed integer types
-        "u8", "u16", "u32", "u64",    // Unsigned integer types
-        "f32", "f64",                 // Floating-point types
-        "isize","usize"
-        };
         
-        if (debugin(type,inttypes)){
-            llvm::Value* v;
+        // REFACTORED: Handle primitive types using Type system
+        if (type && type->is_primitive()) {
+            auto prim_type = std::static_pointer_cast<PrimitiveType>(type);
+            llvm::Value* v = nullptr;
             
-            if (type == "i1") {
-                v = llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx), std::any_cast<int>(value), false); // signed 1-bit
-            } 
-            else if (type == "u8") {
-                v = llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx), std::any_cast<uint8_t>(value), false); // Unsigned 8-bit
-            } else if (type == "i8") {
-                v = llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx), std::any_cast<int8_t>(value), true); // Signed 8-bit
-            } else if (type == "u16") {
-                v = llvm::ConstantInt::get(llvm::Type::getInt16Ty(ctx), std::any_cast<uint16_t>(value),false); // Unsigned 16-bit
-            } else if (type == "i16") {
-                v = llvm::ConstantInt::get(llvm::Type::getInt16Ty(ctx), std::any_cast<int16_t>(value), true); // Signed 16-bit
-            } else if (type == "u32") {
-                v = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), std::any_cast<uint32_t>(value), false); // Unsigned 32-bit
-            } else if (type == "i32") {
-                v = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), std::any_cast<int32_t>(value), true); // Signed 32-bit
-            } else if (type == "u64") {
-                v = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), std::any_cast<uint64_t>(value), false); // Unsigned 64-bit
-            } else if (type == "i64") {
-                v = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), std::any_cast<int64_t>(value), true); // Signed 64-bit
-            } else if (type == "isize") {
-                v = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), std::any_cast<uint64_t>(value), false); // Assume size_t is 64-bit
-            } else if (type == "f32") {
-                v = llvm::ConstantFP::get(llvm::Type::getFloatTy(ctx), std::any_cast<float>(value));
-            } else if (type == "f64") {
-                v = llvm::ConstantFP::get(llvm::Type::getDoubleTy(ctx), std::any_cast<double>(value));
-
+            switch (prim_type->primitive()) {
+                case PrimitiveType::Primitive::I8:
+                    v = llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx), std::any_cast<int8_t>(value), true);
+                    break;
+                case PrimitiveType::Primitive::U8:
+                    v = llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx), std::any_cast<uint8_t>(value), false);
+                    break;
+                case PrimitiveType::Primitive::I16:
+                    v = llvm::ConstantInt::get(llvm::Type::getInt16Ty(ctx), std::any_cast<int16_t>(value), true);
+                    break;
+                case PrimitiveType::Primitive::U16:
+                    v = llvm::ConstantInt::get(llvm::Type::getInt16Ty(ctx), std::any_cast<uint16_t>(value), false);
+                    break;
+                case PrimitiveType::Primitive::I32:
+                    v = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), std::any_cast<int32_t>(value), true);
+                    break;
+                case PrimitiveType::Primitive::U32:
+                    v = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), std::any_cast<uint32_t>(value), false);
+                    break;
+                case PrimitiveType::Primitive::I64:
+                    v = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), std::any_cast<int64_t>(value), true);
+                    break;
+                case PrimitiveType::Primitive::U64:
+                    v = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), std::any_cast<uint64_t>(value), false);
+                    break;
+                case PrimitiveType::Primitive::F32:
+                    v = llvm::ConstantFP::get(llvm::Type::getFloatTy(ctx), std::any_cast<float>(value));
+                    break;
+                case PrimitiveType::Primitive::F64:
+                    v = llvm::ConstantFP::get(llvm::Type::getDoubleTy(ctx), std::any_cast<double>(value));
+                    break;
+                case PrimitiveType::Primitive::BOOL: {
+                    auto boolean = std::any_cast<bool>(value);
+                    v = llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx), boolean ? 1 : 0, false);
+                    break;
+                }
+                case PrimitiveType::Primitive::CHAR: {
+                    llvm::Type *charType = llvm::Type::getInt8Ty(ctx);
+                    if (value.type() == typeid(int)){
+                        v = llvm::ConstantInt::get(charType, std::any_cast<int>(value));
+                    } else if (value.type() == typeid(char)){
+                        v = llvm::ConstantInt::get(charType, std::any_cast<char>(value));
+                    } else {
+                        v = llvm::ConstantInt::get(charType, std::any_cast<std::string>(value)[0]);
+                    }
+                    break;
+                }
+                case PrimitiveType::Primitive::STRING: {
+                    auto strval = std::any_cast<std::string>(value);
+                    if (strs.find(strval) != strs.end()){
+                        return InstructionContainer(strs[strval]);
+                    }
+                    llvm::StringRef ref(strval);
+                    llvm::Value * StringValue = builder.CreateGlobalString(strval, gettmp());
+                    strs[strval] = StringValue;
+                    v = StringValue;
+                    break;
+                }
             }
-            return InstructionContainer(v);
-        } else if (type == "Character"){
-
-            llvm::Type *charType = llvm::Type::getInt8Ty(ctx);
-            llvm::Value *charValue;
-            if (value.type() == typeid(int)){
-                charValue = llvm::ConstantInt::get(charType, std::any_cast<int>(value));
-            } else if (value.type() == typeid(char)){
-                charValue = llvm::ConstantInt::get(charType, std::any_cast<char>(value));
-            } else {
-                charValue = llvm::ConstantInt::get(charType, std::any_cast<std::string>(value)[0]);
             
-
-            
+            if (v) {
+                return InstructionContainer(v);
             }
-            return InstructionContainer(charValue);
-        } else if (type == "RawString"){
-            auto strval =std::any_cast<std::string>(value);
-            if (strs.find(strval) != strs.end()){
-                return InstructionContainer(strs[strval]);
-            }
-            llvm::StringRef ref(strval);
-            llvm::Value * StringValue = builder.CreateGlobalString(strval,gettmp());
-            strs[strval] = StringValue;
-            return InstructionContainer(StringValue);
-        } else if (type == "Bool"){
-            llvm::Value * boolval;
-            auto boolean = std::any_cast<bool>(value);
-            if (boolean){
-                boolval = llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx), 1, false);
-            } else {
-                boolval = llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx), 0, false);
-            }
-            return InstructionContainer(boolval);
-        } else if (type == "Null"){
-                llvm::Value *nullPtr = llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx,0));
-                return InstructionContainer(nullPtr);
-        }else if (type == "Void"){
-            if (functions.find("TundraVoidFactory") == functions.end() ){
-                llvm::FunctionType* funcType = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), false);
-                llvm::Function* MVF = llvm::Function::Create(funcType, llvm::Function::InternalLinkage, "TundraVoidFactory", mod);
-                auto cblock = builder.GetInsertBlock();
-                auto entryBB = llvm::BasicBlock::Create(ctx,gettmp(),MVF);
-                builder.SetInsertPoint(entryBB);
-                builder.CreateRetVoid();
-                builder.SetInsertPoint(cblock);
-                functions["TundraVoidFactory"] = MVF;
-            }
-            llvm::Value* voidv = builder.CreateCall(functions["TundraVoidFactory"]);
-            return InstructionContainer(voidv);
-        } else if (type == "none"){
-            if (globals.find("none") == globals.end()) {
-                llvm::StructType* structtype = llvm::StructType::create(ctx,"none_struct");
-                llvm::Type * sty = structtype;
-                llvm::Value* alloc = new llvm::GlobalVariable(mod,sty,false,llvm::GlobalValue::InternalLinkage,llvm::ConstantAggregateZero::get(sty),"none");
-                //builder.CreateStore(alloca,alloc);
-                //globals["none"] = alloc;
-                globaltypes["none"] = sty;
-                std::vector<llvm::Constant*> cons{};
-                globals["none"] = new llvm::GlobalVariable(mod,sty->getPointerTo(),true,llvm::GlobalValue::InternalLinkage,llvm::dyn_cast<llvm::Constant>(alloc),"noneload");
-            }
-            return InstructionContainer(globals["none"]);
         }
+        
+        // REFACTORED: Handle void type
+        if (type && type->is_void()) {
+            return InstructionContainer(nullptr);
+        }
+        
+        // Handle null pointer (when type is nullptr)
+        if (!type) {
+            llvm::Value *nullPtr = llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx,0));
+            return InstructionContainer(nullPtr);
+        }
+        
         return InstructionContainer(nullptr);
     }
 
@@ -698,73 +684,74 @@ struct resource_instruction : public Instruction {
 std::unordered_map<std::string, llvm::Type*> stids;
 
 struct type_instruction : public Instruction {
-    llvm::Type* type;
+    std::shared_ptr<Type> type;  // REFACTORED: Changed from llvm::Type* to std::shared_ptr<Type>
     llvm::Value* value;
     std::vector<std::shared_ptr<Instruction>> inst;
     std::vector<std::string> procs{"struct","fty"}; // pointer is one arg so ignore
     std::string process;
 
-    type_instruction(llvm::Type* type,llvm::Value* v=nullptr,std::vector<std::shared_ptr<Instruction>> inst={},std::string proc="") : type(type), value(v), inst(inst), process(proc) {}
+    type_instruction(std::shared_ptr<Type> type,llvm::Value* v=nullptr,std::vector<std::shared_ptr<Instruction>> inst={},std::string proc="") : type(type), value(v), inst(inst), process(proc) {}
 
     InstructionContainer execute(llvm::LLVMContext & ctx, llvm::Module & mod, MetadataIRBuilder &builder,
                  std::unordered_map<std::string, llvm::Value *> &variables, std::unordered_map<std::string, llvm::Function *> & functions) override {
                     std::string stid = "";
                     llvm::Type* ty;
 
-
-                    if (inst[0] && process == "struct"){
-                        std::vector<llvm::Type*> stty;
-                        for (auto& i : inst){
-                            stty.push_back(i->exec(ctx,mod,builder,variables,functions).gettype());
-                            stid += std::to_string(i->exec(ctx,mod,builder,variables,functions).gettype()->getTypeID());
-                        }
-                            ty = llvm::StructType::get(ctx,stty,false);
-
-                    
-                        
-                    } else if (inst[0] && process == "array"){
-                        std::vector<llvm::Type*> arty;
-                        for (auto& i : inst){
-                            arty.push_back(i->exec(ctx,mod,builder,variables,functions).gettype());
-                        }
-                        ty = llvm::ArrayType::get(arty[0],arty.size());
-                        
-                    } else if (inst[0] && process == "fty"){
-
-                        std::vector<llvm::Type*> stty;
-                        for (auto& i : inst){
-                            stty.push_back(i->exec(ctx,mod,builder,variables,functions).gettype());
-                        }
-                        auto retty = stty[stty.size()-1];
-                        stty.pop_back();
-                        ty = llvm::FunctionType::get(retty,stty,false);
-                        
-                    }else if (inst[0] && !debugin(process,procs)){
-                        auto exec = inst[0]->exec(ctx,mod,builder,variables,functions);
-                        
-                        if (exec.isType()){
-                            ty = exec.gettype();
-                        } else {
-                            ty = exec.gettype();
-                        }
-
-                        //return InstructionContainer(ty);
-                    }  else if (value){
-                        ty = value->getType();
-                    } else {
-                        ty = type;
+                    // REFACTORED: If we have a Type object, convert it to LLVM type
+                    if (type) {
+                        ty = type->llvm_type(ctx);
+                        return InstructionContainer(ty);
                     }
-                    if (process == "pointer"){
-                            ty = llvm::PointerType::get(ty,0);
-                    }
-
-                    
-                    return InstructionContainer(ty);
+                    throw std::runtime_error("Non-type object instruction");
 
                  
                  
     }
 };
+
+
+static std::shared_ptr<Type> typeFromInstruction(const std::shared_ptr<Instruction>& inst, llvm::Type* fallback=nullptr){
+    if (!inst){
+        return nullptr;
+    }
+    return inst->typeinfo;
+}
+
+static void storeTypeForName(const std::string& name,const std::shared_ptr<Type>& ty,bool isGlobal){
+    if (!ty){
+        return;
+    }
+    if (isGlobal){
+        globalvartypes[name] = ty;
+    } else {
+        vartypes[name] = ty;
+    }
+}
+
+static llvm::Type* resolveLLVMTypeForSlot(const std::string& name, llvm::Value* slot, bool isGlobal, llvm::LLVMContext& ctx){
+    auto& llvmMap = isGlobal ? globaltypes : types;
+    auto& typeMap = isGlobal ? globalvartypes : vartypes;
+    auto it = llvmMap.find(name);
+    if (it != llvmMap.end() && it->second){
+        return it->second;
+    }
+    if (slot){
+        if (slot->getType()->isPointerTy()){
+            auto elem = slot->getType()->getPointerTo();
+            llvmMap[name] = elem;
+            return elem;
+        }
+        llvmMap[name] = slot->getType();
+        return slot->getType();
+    }
+    auto it2 = typeMap.find(name);
+    if (it2 != typeMap.end() && it2->second){
+        auto ty = it2->second->llvm_type(ctx);
+        llvmMap[name] = ty;
+        return ty;
+    }
+    return nullptr;
+}
 
 struct alloc_instruction : public Instruction {
     std::string name;
@@ -815,53 +802,39 @@ struct alloc_instruction : public Instruction {
         
    
         llvm::Value* allocinst;
-        if (!specifiedty){
-            auto executed = value->exec(ctx,mod,builder,variables,functions).getvalue();
-            oblock = builder.GetInsertBlock();
-            if (variables.find(name) != variables.end()){
-                return InstructionContainer(nullptr); // bad_handling
-            }
-            
-            
-
-
-            types[name] = executed->getType();
-            // Allocreigon 1
-            
-            builder.SetInsertPoint(getallocr(builder));
-            //if (!ismainfunction){
-
-            allocinst = builder.CreateAlloca(executed->getType(), nullptr, name);
-            //} 
-            /*else {
-                allocinst = globalize(name,executed->getType(),ctx,mod,builder,variables,functions);
-            }*/
-            if (sv){
-                builder.CreateStore(sv,allocinst);
-                flag = 1;
-            }
-            
-        } else {
-            types[name] = specifiedty;
-            //auto cblock = builder.GetInsertBlock();
-            builder.SetInsertPoint(getallocr(builder));
-            /*if (!ismainfunction || !ismainblock){*/
-                allocinst = builder.CreateAlloca(specifiedty, nullptr, name);
-            /*}*/ /*else if (ismainfunction) {
-                allocinst = globalize(name,specifiedty,ctx,mod,builder,variables,functions);
-  
-            }*/
-            if (sv){
-                builder.CreateStore(sv,allocinst);
-                flag = 1;
-            }
+        
+        auto executed = value->exec(ctx,mod,builder,variables,functions).gettype();
+        oblock = builder.GetInsertBlock();
+        if (variables.find(name) != variables.end()){
+            return InstructionContainer(nullptr); // bad_handling
         }
+        
+        
+
+
+        types[name] = executed->getType();
+        storeTypeForName(name,typeFromInstruction(value,executed->getType()),false);
+        // Allocreigon 1
+        
+        builder.SetInsertPoint(getallocr(builder));
+        //if (!ismainfunction){
+
+        allocinst = builder.CreateAlloca(executed->getType(), nullptr, name);
+        //} 
+        /*else {
+            allocinst = globalize(name,executed->getType(),ctx,mod,builder,variables,functions);
+        }*/
+        if (sv){
+            builder.CreateStore(sv,allocinst);
+            flag = 1;
+        }
+            
         
         variables[name] = allocinst;
         if (iswhileblock){
         
         variables["flag" + name] = builder.CreateAlloca(builder.getInt1Ty(),nullptr, "flag" + name);
-        builder.CreateStore(resource_instruction("Bool",flag).exec(ctx,mod,builder,variables,functions).getvalue(),variables["flag" + name]);
+        builder.CreateStore(resource_instruction(TYR.get_bool(),flag).exec(ctx,mod,builder,variables,functions).getvalue(),variables["flag" + name]);
         }
         if (!oblock){
         builder.SetInsertPoint(cblock);
@@ -896,7 +869,7 @@ InstructionContainer pointerize(llvm::Value* sv,llvm::LLVMContext & ctx, llvm::M
                         }
                         int64_t szi = DL->getTypeAllocSize(sv->getType());
 
-                        auto szof = resource_instruction("i64",szi).exec(ctx,mod,builder,variables,functions).getvalue();
+                        auto szof = resource_instruction(TYR.get_i64(),szi).exec(ctx,mod,builder,variables,functions).getvalue();
                         memcpy_polymorph(variables[gtmp],sv,szof,ctx,mod,builder,variables,functions);
                     } else {
                         builder.CreateStore(sv,variables[gtmp]);
@@ -949,7 +922,7 @@ struct store_instruction : public Instruction {
                     if (!sv){
                         auto val = value->exec(ctx,mod,builder,variables,functions);
                         if (DL->getTypeAllocSize(val.getvalue()->getType()) > 128){
-                            llvm::Value* szof = resource_instruction("i64",int64_t(DL->getTypeAllocSize(val.getvalue()->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
+                            llvm::Value* szof = resource_instruction(TYR.get_i64(),int64_t(DL->getTypeAllocSize(val.getvalue()->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
 
                             memcpy_polymorph(globals[i->getName().str() + name],pointerize(val.receivepair()[0],ctx,mod,builder,variables,functions).getvalue(),szof,ctx,mod,builder,variables,functions);
                         }  else {
@@ -957,7 +930,7 @@ struct store_instruction : public Instruction {
                         }
                     } else {
                         if (DL->getTypeAllocSize(sv->getType()) > 128){
-                            llvm::Value* szof = resource_instruction("i64",int64_t(DL->getTypeAllocSize(sv->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
+                            llvm::Value* szof = resource_instruction(TYR.get_i64(),int64_t(DL->getTypeAllocSize(sv->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
 
                             memcpy_polymorph(globals[i->getName().str() + name],pointerize(sv,ctx,mod,builder,variables,functions).getvalue(),szof,ctx,mod,builder,variables,functions);
                         } else {
@@ -973,7 +946,7 @@ struct store_instruction : public Instruction {
                 if (!sv){
                     auto val = value->exec(ctx,mod,builder,variables,functions);
                     if (DL->getTypeAllocSize(val.getvalue()->getType()) > 128){
-                        llvm::Value* szof = resource_instruction("i64",int64_t(DL->getTypeAllocSize(val.getvalue()->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
+                        llvm::Value* szof = resource_instruction(TYR.get_i64(),int64_t(DL->getTypeAllocSize(val.getvalue()->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
 
                         memcpy_polymorph(globals[name],pointerize(val.receivepair()[0],ctx,mod,builder,variables,functions).getvalue(),szof,ctx,mod,builder,variables,functions);
                     } else {
@@ -981,7 +954,7 @@ struct store_instruction : public Instruction {
                     }
                 } else {
                     if (DL->getTypeAllocSize(sv->getType()) > 128){
-                        llvm::Value* szof = resource_instruction("i64",int64_t(DL->getTypeAllocSize(sv->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
+                        llvm::Value* szof = resource_instruction(TYR.get_i64(),int64_t(DL->getTypeAllocSize(sv->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
 
                         memcpy_polymorph(globals[name],pointerize(sv,ctx,mod,builder,variables,functions).getvalue(),szof,ctx,mod,builder,variables,functions);
                     } else {
@@ -1000,7 +973,7 @@ struct store_instruction : public Instruction {
         if (sv){
             //std::cout << "sv" << name << std::endl;
             if (DL->getTypeAllocSize(sv->getType()) > 128){
-                llvm::Value* szof = resource_instruction("i64",int64_t(DL->getTypeAllocSize(sv->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
+                llvm::Value* szof = resource_instruction(TYR.get_i64(),int64_t(DL->getTypeAllocSize(sv->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
 
                 memcpy_polymorph(variables[varname],pointerize(sv,ctx,mod,builder,variables,functions).getvalue(),szof,ctx,mod,builder,variables,functions);
             } else {
@@ -1020,7 +993,7 @@ struct store_instruction : public Instruction {
             
             if (DL->getTypeAllocSize(val->getType()) > 128){
 
-                llvm::Value* szof = resource_instruction("i64",int64_t(DL->getTypeAllocSize(val->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
+                llvm::Value* szof = resource_instruction(TYR.get_i64(),int64_t(DL->getTypeAllocSize(val->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
                 
 
                 memcpy_polymorph(variables[varname],valp[0],szof,ctx,mod,builder,variables,functions);
@@ -1032,7 +1005,7 @@ struct store_instruction : public Instruction {
         if (sv){
             //std::cout << "nsv" << name << std::endl;
             if (DL->getTypeAllocSize(sv->getType()) > 128){
-                llvm::Value* szof = resource_instruction("i64",int64_t(DL->getTypeAllocSize(sv->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
+                llvm::Value* szof = resource_instruction(TYR.get_i64(),int64_t(DL->getTypeAllocSize(sv->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
                 value->setStore(false);
                 memcpy_polymorph(variables[name],pointerize(sv,ctx,mod,builder,variables,functions).getvalue(),szof,ctx,mod,builder,variables,functions);
             }  else {
@@ -1044,7 +1017,7 @@ struct store_instruction : public Instruction {
             auto valp = value->exec(ctx,mod,builder,variables,functions).receivepair();
             auto val = valp[0];
             if (DL->getTypeAllocSize(val->getType()) > 128){
-                llvm::Value* szof = resource_instruction("i64",int64_t(DL->getTypeAllocSize(val->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
+                llvm::Value* szof = resource_instruction(TYR.get_i64(),int64_t(DL->getTypeAllocSize(val->getType()))).exec(ctx,mod,builder,variables,functions).getvalue();
 
                 memcpy_polymorph(variables[name],pointerize(valp[1],ctx,mod,builder,variables,functions).getvalue(),szof,ctx,mod,builder,variables,functions);
             } else {
@@ -1053,7 +1026,7 @@ struct store_instruction : public Instruction {
         }  
         }
         if (variables.find("flag" + varname) != variables.end()){
-            builder.CreateStore(resource_instruction("Bool",true).exec(ctx,mod,builder,variables,functions).getvalue(),variables["flag" + varname]);
+            builder.CreateStore(resource_instruction(TYR.get_bool(),true).exec(ctx,mod,builder,variables,functions).getvalue(),variables["flag" + varname]);
         }
         
         auto vn = usename ? name : varname;
@@ -1077,6 +1050,7 @@ struct assign_instruction : public Instruction {
 
 
         auto varname =  builder.GetInsertBlock()->getName().str()+name;
+        auto typehint = typeFromInstruction(value);
         if (!global && ((( !ismainfunction) || (!ismainblock && ismainfunction)) || isnonspecblock)){
         if (variables.find(varname) == variables.end()) {
             alloc_instruction(varname,value).execute(ctx,mod,builder,variables,functions);
@@ -1087,30 +1061,37 @@ struct assign_instruction : public Instruction {
             }*/
 
         }
+        storeTypeForName(varname,typehint,false);
         } else {
             ////std::cout << "assign globalizing " << varname << ":" << global << ":" << ismainfunction << std::endl;
             if (!usename){
             if (variables.find(varname) == variables.end()) {
                 auto vtype = value->exec(ctx,mod,builder,variables,functions).gettype();
+                auto storedType = typeFromInstruction(value,vtype);
                 //std::cout << varname << vtype->isArrayTy() << std::endl;
                 llvm::Value* v = new llvm::GlobalVariable(mod,vtype,false,llvm::GlobalValue::InternalLinkage,llvm::Constant::getNullValue(vtype),varname);
                 variables[varname] = v;
                 types[varname] = vtype;
+                storeTypeForName(varname,storedType,false);
                 if (ismainfunction){
                     globals[name] = v;
                     globaltypes[name] = vtype;
+                    storeTypeForName(name,storedType,true);
                 }
             }
             } else {
             if (variables.find(name) == variables.end()) {
                 auto vtype = value->exec(ctx,mod,builder,variables,functions).gettype();;
+                auto storedType = typeFromInstruction(value,vtype);
                 llvm::Value* v = new llvm::GlobalVariable(mod,vtype,false,llvm::GlobalValue::InternalLinkage,llvm::Constant::getNullValue(vtype),name);
                 variables[name] = v;
                 types[name] = vtype;
+                storeTypeForName(name,storedType,false);
                 ////std::cout << "Created " + name << std::endl;
                 if (ismainfunction){
                     globals[name] = variables[name];
                     globaltypes[name] = types[name];
+                    storeTypeForName(name,storedType,true);
                 }
             }
             }
@@ -1137,7 +1118,7 @@ struct size_of_instruction :  public Instruction {
     InstructionContainer execute(llvm::LLVMContext & ctx, llvm::Module & mod, MetadataIRBuilder &builder,
                  std::unordered_map<std::string, llvm::Value *> &variables, std::unordered_map<std::string, llvm::Function *> & functions) override {
                     uint64_t sz = DL->getTypeAllocSize(obj->exec(ctx,mod,builder,variables,functions).gettype());
-                    return resource_instruction("u64",sz).exec(ctx,mod,builder,variables,functions);
+                    return resource_instruction(TYR.get_u64(),sz).exec(ctx,mod,builder,variables,functions);
                  }
 };
 
@@ -1149,7 +1130,7 @@ struct stack_size_instruction :  public Instruction {
 
     InstructionContainer execute(llvm::LLVMContext & ctx, llvm::Module & mod, MetadataIRBuilder &builder,
                  std::unordered_map<std::string, llvm::Value *> &variables, std::unordered_map<std::string, llvm::Function *> & functions) override {
-                    return resource_instruction("u64",StackSize).exec(ctx,mod,builder,variables,functions);
+                    return resource_instruction(TYR.get_u64(),StackSize).exec(ctx,mod,builder,variables,functions);
                  }
 };
 
@@ -1170,7 +1151,7 @@ struct type_id_instruction :  public Instruction {
                     }
                     uint64_t sz = obj->exec(ctx,mod,builder,variables,functions).gettype()->getTypeID();
                     sz = debugCPf(sz,nsz);
-                    return resource_instruction("u64",sz).exec(ctx,mod,builder,variables,functions);
+                    return resource_instruction(TYR.get_u64(),sz).exec(ctx,mod,builder,variables,functions);
                  }
 };
 
@@ -1280,6 +1261,7 @@ struct pointer_instruction : public Instruction {
         auto pblock = builder.GetInsertBlock()->getName().str();
         auto ptrid = gettmp();
         types[pblock + ptrid] = ptrty;
+        storeTypeForName(pblock + ptrid,typeFromInstruction(ptrvalue),false);
         auto alloca = alloc_instruction(pblock + ptrid,ptrvalue,ptrty).exec(ctx,mod,builder,variables,functions);
         auto alloca2 = alloc_instruction(pblock + ptrid + "_tundra_ptr_alloc",ptrvalue,value.gettype()).exec(ctx,mod,builder,variables,functions);
         auto stinst = store_instruction(ptrid + "_tundra_ptr_alloc",ptrvalue).exec(ctx,mod,builder,variables,functions);
@@ -1399,16 +1381,20 @@ struct load_instruction : public Instruction {
                 if (!globals[name]){
                     throw std::runtime_error("BAD GVALUE");
                 }
-                if (!globaltypes[name]){
-                    throw std::runtime_error("BAD GTYPE");
-                }
                 if (givebackptr){
                     return InstructionContainer(globals[name]);
                 }
-
-                llvm::Value * gbl = builder.CreateLoad(globaltypes[name],globals[name], gettmp());
+                auto gval = globals[name];
+                if (!gval->getType()->isPointerTy()){
+                    return InstructionContainer(gval);
+                }
+                auto gty = resolveLLVMTypeForSlot(name,gval,true,ctx);
+                if (!gty){
+                    throw std::runtime_error("BAD GTYPE");
+                }
+                llvm::Value * gbl = builder.CreateLoad(gty,gval, gettmp());
                 if (givebackptrpair){
-                    std::vector<llvm::Value*> pair{globals[name],gbl};
+                    std::vector<llvm::Value*> pair{gval,gbl};
                     return InstructionContainer(pair);
                 }
                 return InstructionContainer(gbl);
@@ -1430,27 +1416,37 @@ struct load_instruction : public Instruction {
                 return InstructionContainer(variables[varname]);
         }
 
-        llvm::Value* loadedvalue = builder.CreateLoad(types[varname],variables[varname],tmp);
+        auto varTy = resolveLLVMTypeForSlot(varname,variables[varname],false,ctx);
+        if (!varTy){
+            throw std::runtime_error("BAD TYPE FOR VARIABLE: " + varname);
+        }
+        llvm::Value* loadedvalue = builder.CreateLoad(varTy,variables[varname],tmp);
 
 
         /*if (tmp == "tmp139"){
             throw std::runtime_error(varname + " : " + (types[varname]->isStructTy() ? "true" : "false"));
         }*/
         if (varname != builder.GetInsertBlock()->getName().str() + name && name.substr(0,6) != "retval" && ( iswhileblock)){
-            alloc_instruction(builder.GetInsertBlock()->getName().str() + name,nullptr,types[varname],nullptr).exec(ctx,mod,builder,variables,functions);
-            auto cmp = builder.CreateICmpEQ(builder.CreateLoad(builder.getInt1Ty(),variables["flag" + builder.GetInsertBlock()->getName().str() + name]),resource_instruction("Bool",true).exec(ctx,mod,builder,variables,functions).getvalue());
+            alloc_instruction(builder.GetInsertBlock()->getName().str() + name,std::make_shared<value_instruction>(selectstore),varTy,nullptr).exec(ctx,mod,builder,variables,functions);
+            auto cmp = builder.CreateICmpEQ(builder.CreateLoad(builder.getInt1Ty(),variables["flag" + builder.GetInsertBlock()->getName().str() + name]),resource_instruction(TYR.get_bool(),true).exec(ctx,mod,builder,variables,functions).getvalue());
             auto select = builder.CreateSelect(cmp,variables[builder.GetInsertBlock()->getName().str() + name],variables[varname]);
-            auto selectstore = builder.CreateSelect(cmp,builder.CreateLoad(types[varname],variables[builder.GetInsertBlock()->getName().str() + name],tmp),loadedvalue);
+            auto selectstore = builder.CreateSelect(cmp,builder.CreateLoad(varTy,variables[builder.GetInsertBlock()->getName().str() + name],tmp),loadedvalue);
+            
             store_instruction(name,std::make_shared<value_instruction>(selectstore)).exec(ctx,mod,builder,variables,functions);
 
 
-            types[builder.GetInsertBlock()->getName().str() + name] = types[varname];
+
+
+            types[builder.GetInsertBlock()->getName().str() + name] = varTy;
+            if (vartypes.find(varname) != vartypes.end()){
+                vartypes[builder.GetInsertBlock()->getName().str() + name] = vartypes[varname];
+            }
             
             auto debugtmp =gettmp();
             if (givebackptr){
                 return InstructionContainer(select);
             }
-            loadedvalue = builder.CreateLoad(types[builder.GetInsertBlock()->getName().str() + name],select,debugtmp);
+            loadedvalue = builder.CreateLoad(varTy,select,debugtmp);
             if (givebackptrpair){
                 std::vector<llvm::Value*> pair{select,loadedvalue};
                 return InstructionContainer(pair);
@@ -1500,7 +1496,7 @@ struct block_instruction : public Instruction {
     InstructionContainer execute(llvm::LLVMContext & ctx, llvm::Module & mod, MetadataIRBuilder &builder,
                  std::unordered_map<std::string, llvm::Value *> &variables, std::unordered_map<std::string, llvm::Function *> & functions) override {
         if (insts_size() == 0){
-            return InstructionContainer(std::any());
+            return InstructionContainer(nullptr);
         }
         bool prev = ismainblock;
         bool prevwhile = isnonspecblock;
@@ -1799,8 +1795,23 @@ struct return_instruction : public Instruction {
         
         std::string cfn = builder.GetInsertBlock()->getParent()->getName().str();
         //(builder);
+        if (!value){
+            return InstructionContainer(nullptr);
+        }
         value->setGiveBackPtr(false);
-        llvm::Value* ret;
+        auto eval = value->exec(ctx,mod,builder,variables,functions);
+        if (eval.isType()){
+            auto ty = eval.gettype();
+            if (ty && ty->isVoidTy()){
+                return InstructionContainer(nullptr);
+            }
+            return InstructionContainer(nullptr);
+        }
+        auto rv = eval.getvalue();
+        if (!rv || rv->getType()->isVoidTy()){
+            return InstructionContainer(nullptr);
+        }
+
 
         if (variables.find("retval" + cfn) == variables.end()){
             alloc_instruction("retval" + cfn,value).execute(ctx,mod,builder,variables,functions);
@@ -1879,10 +1890,6 @@ struct function_instruction : public Instruction {
 
     InstructionContainer execute(llvm::LLVMContext &ctx, llvm::Module &mod, MetadataIRBuilder &builder,
                  std::unordered_map<std::string, llvm::Value *> & variables, std::unordered_map<std::string, llvm::Function *> & functions) override {
-        if (globals.find("none") == globals.end()) {
-                resource_instruction("none",nullptr).exec(ctx,mod,builder,variables,functions);
-                //globals["noneload"] = new llvm::GlobalVariable(mod,sty,true,llvm::GlobalValue::InternalLinkage,llvm::dyn_cast<llvm::Constant>(globals["none"]),"noneload");
-        }
         std::vector<llvm::Type*>vecargtypes;
         bool prev = ismainfunction;
 
@@ -1904,7 +1911,10 @@ struct function_instruction : public Instruction {
         }
         }
         
-        llvm::FunctionType *funcType = llvm::FunctionType::get(returnType->exec(ctx,mod,builder,variables,functions).gettype(), vecargtypes, variadic);
+        auto retContainer = returnType->exec(ctx,mod,builder,variables,functions);
+        auto retTy = retContainer.gettype();
+        bool retIsVoid = retTy && retTy->isVoidTy();
+        llvm::FunctionType *funcType = llvm::FunctionType::get(retTy, vecargtypes, variadic);
         
         llvm::Function* fn;
         llvm::Function* internalfn;
@@ -1959,7 +1969,7 @@ struct function_instruction : public Instruction {
         }
         
         if (ismainfn){
-            addedinstructions.push_back(std::make_shared<return_instruction>(std::make_shared<resource_instruction>("i32",0)));
+            addedinstructions.push_back(std::make_shared<return_instruction>(std::make_shared<resource_instruction>(TYR.get_i32(),0)));
         }
         
         body->insts = addedinstructions;
@@ -1968,7 +1978,7 @@ struct function_instruction : public Instruction {
 
         if (isnonereturn){
 
-            body->insts.push_back(std::make_shared<return_instruction>(std::make_shared<resource_instruction>("none",nullptr)));
+            body->insts.push_back(std::make_shared<return_instruction>(std::make_shared<type_instruction>(TYR.get_void())));
         }
         
         
@@ -1977,16 +1987,20 @@ struct function_instruction : public Instruction {
         auto bvalue = body->exec(ctx,mod,builder,variables,functions);
 
         if (!ismainfn){
-
-            if (extname == "" && !external){
-            if (variables.find("retval" + name) == variables.end()){
-                builder.CreateRet(bvalue.getvalue());
-            }
+            std::string retname = "retval" + fn->getName().str();
+            if (variables.find(retname) != variables.end()){
+                if (retIsVoid){
+                    builder.CreateRetVoid();
+                } else {
+                    auto rv = load_instruction(retname).exec(ctx,mod,builder,variables,functions).getvalue();
+                    builder.CreateRet(rv);
+                }
             } else {
-
-            if (variables.find("retval" + extname + name) == variables.end() && variables.find("retval" + name) == variables.end()){
-                builder.CreateRet(bvalue.getvalue());
-            }
+                if (retIsVoid){
+                    builder.CreateRetVoid();
+                } else {
+                    builder.CreateRet(bvalue.getvalue());
+                }
             }
             builder.SetInsertPoint(cblock);
         } else if (ismainfn){
@@ -2070,33 +2084,33 @@ struct call_instruction : public Instruction {
             vecargs.push_back(inst->exec(ctx,mod,builder,variables,functions).getvalue());
         }
 
+        llvm::Function*  fn = nullptr;
+        llvm::FunctionType* fnt = nullptr;
 
-
-
-        llvm::Function*  fn;
-        llvm::FunctionType* fnt;
-
-        llvm::Type* ft = fty->exec(ctx,mod,builder,variables,functions).gettype();
-
-        if (ft->isFunctionTy()){
-            fnt = llvm::dyn_cast<llvm::FunctionType>(ft);
-        
-            fn = source->exec(ctx,mod,builder,variables,functions).getfunction(builder,fnt);
-        } else {
-            fn = source->exec(ctx,mod,builder,variables,functions).getfunction(builder,nullptr);
+        if (fty){
+            llvm::Type* ft = fty->exec(ctx,mod,builder,variables,functions).gettype();
+            if (ft && ft->isFunctionTy()){
+                fnt = llvm::dyn_cast<llvm::FunctionType>(ft);
+            }
         }
 
+        auto src = source->exec(ctx,mod,builder,variables,functions);
+        fn = src.getfunction(builder,fnt);
 
         llvm::Value* call_value ;
+        if (fnt->getReturnType()->isVoidTy()){
+            call_value = builder.CreateCall(fnt, src.getvalue(),vecargs);
+            return InstructionContainer(nullptr);
+        }
         if (!fn){
-           call_value = builder.CreateCall(fnt, source->exec(ctx,mod,builder,variables,functions).getvalue(),vecargs,gettmp());
+           if (!fnt){
+               fnt = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),{},false);
+           }
+           call_value = builder.CreateCall(fnt, src.getvalue(),vecargs,gettmp());
         } else {
-
-        
-        
-
             call_value = builder.CreateCall(fn,vecargs,gettmp());
         }
+
         
         return InstructionContainer(call_value);
 
@@ -2118,12 +2132,18 @@ struct memset_instruction : public Instruction {
     InstructionContainer execute(llvm::LLVMContext & ctx, llvm::Module & mod, MetadataIRBuilder &builder,
                  std::unordered_map<std::string, llvm::Value *> &variables, std::unordered_map<std::string, llvm::Function *> & functions) override {
 
+        auto i8ptr = std::make_shared<PointerType>(TYR.get_i8());
         if (functions.find("memset") == functions.end()){
-            std::vector<std::shared_ptr<Instruction>> vec{std::make_shared<pointer_instruction>(std::make_shared<resource_instruction>("i8",int8_t(0))),std::make_shared<resource_instruction>("i32",0),std::make_shared<resource_instruction>("i64",int64_t(0))};
-            declare_function_instruction("memset",vec,std::make_shared<pointer_instruction>(std::make_shared<resource_instruction>("i8",int8_t(0))),false).exec(ctx,mod,builder,variables,functions);
+            std::vector<std::shared_ptr<Instruction>> declargs{
+                std::make_shared<type_instruction>(i8ptr),
+                std::make_shared<type_instruction>(TYR.get_i32()),
+                std::make_shared<type_instruction>(TYR.get_i64())
+            };
+            declare_function_instruction("memset",declargs,std::make_shared<type_instruction>(i8ptr),false).exec(ctx,mod,builder,variables,functions);
         }
         std::vector<std::shared_ptr<Instruction>> vec{std::make_shared<value_instruction>(ptr),std::make_shared<value_instruction>(setvalue),std::make_shared<value_instruction>(size)};
-        return call_instruction(std::make_shared<value_instruction>(llvm::dyn_cast<llvm::Value>(functions["memset"])),vec,std::make_shared<type_instruction>(nullptr,nullptr,vec,"fty")).exec(ctx,mod,builder,variables,functions);
+        auto fty = std::make_shared<FunctionType>(std::vector<std::shared_ptr<Type>>{i8ptr,TYR.get_i32(),TYR.get_i64()},i8ptr,false);
+        return call_instruction(std::make_shared<value_instruction>(llvm::dyn_cast<llvm::Value>(functions["memset"])),vec,std::make_shared<type_instruction>(fty)).exec(ctx,mod,builder,variables,functions);
 }
 
 };
@@ -2138,13 +2158,18 @@ struct memcpy_instruction : public Instruction {
     InstructionContainer execute(llvm::LLVMContext & ctx, llvm::Module & mod, MetadataIRBuilder &builder,
                  std::unordered_map<std::string, llvm::Value *> &variables, std::unordered_map<std::string, llvm::Function *> & functions) override {
 
+        auto i8ptr = std::make_shared<PointerType>(TYR.get_i8());
         if (functions.find("memcpy") == functions.end()){
-            auto i8p = std::make_shared<pointer_instruction>(std::make_shared<resource_instruction>("i8",int8_t(0)));
-            std::vector<std::shared_ptr<Instruction>> vec{i8p,i8p,std::make_shared<resource_instruction>("i64",int64_t(0))};
-            declare_function_instruction("memcpy",vec,i8p,false).exec(ctx,mod,builder,variables,functions);
+            std::vector<std::shared_ptr<Instruction>> declargs{
+                std::make_shared<type_instruction>(i8ptr),
+                std::make_shared<type_instruction>(i8ptr),
+                std::make_shared<type_instruction>(TYR.get_i64())
+            };
+            declare_function_instruction("memcpy",declargs,std::make_shared<type_instruction>(i8ptr),false).exec(ctx,mod,builder,variables,functions);
         }
         std::vector<std::shared_ptr<Instruction>> vec{std::make_shared<value_instruction>(ptr),std::make_shared<value_instruction>(dest),std::make_shared<value_instruction>(size)};
-        return call_instruction(std::make_shared<value_instruction>(llvm::dyn_cast<llvm::Value>(functions["memcpy"])),vec,std::make_shared<type_instruction>(nullptr,nullptr,vec,"fty")).exec(ctx,mod,builder,variables,functions);
+        auto fty = std::make_shared<FunctionType>(std::vector<std::shared_ptr<Type>>{i8ptr,i8ptr,TYR.get_i64()},i8ptr,false);
+        return call_instruction(std::make_shared<value_instruction>(llvm::dyn_cast<llvm::Value>(functions["memcpy"])),vec,std::make_shared<type_instruction>(fty)).exec(ctx,mod,builder,variables,functions);
 }
 
 
@@ -2241,7 +2266,7 @@ struct struct_decl_instruction :  public Instruction {
         name = builder.GetInsertBlock()->getName().str() + name;
         llvm::Type* structy;
         if (typearray.empty()){
-            typearray.push_back(resource_instruction("none","").exec(ctx,mod,builder,variables,functions).gettype()); // weird but apparently empty structs are a no
+            typearray.push_back(type_instruction(TYR.get_void()).exec(ctx,mod,builder,variables,functions).gettype()); // weird but apparently empty structs are a no
         }
         structy = llvm::StructType::create(typearray,name,ispacked);
 
@@ -2260,6 +2285,11 @@ struct struct_decl_instruction :  public Instruction {
         );
         globals[origname] = GlobalStruct;
         globaltypes[origname] = structy;
+        if (TYR.has_type(origname)){
+            auto sty = TYR.get_type(origname);
+            globalvartypes[origname] = sty;
+            vartypes[name] = sty;
+        }
         return InstructionContainer(structy);
 
 
@@ -2290,28 +2320,46 @@ struct struct_instance_instruction :  public Instruction {
         for (auto& field: fields){
             fvalues.push_back(field->exec(ctx,mod,builder,variables,functions).getvalue());
         }
-        if (extmap.find(pstruct->exec(ctx,mod,builder,variables,functions).gettype()->getTypeID()) != extmap.end()){
-            for (auto& n : extmap[pstruct->exec(ctx,mod,builder,variables,functions).gettype()->getTypeID()]){
+        auto pstructres = pstruct->exec(ctx,mod,builder,variables,functions);
+        auto structty = pstructres.gettype();
+        if (extmap.find(structty->getTypeID()) != extmap.end()){
+            for (auto& n : extmap[structty->getTypeID()]){
                 assign_instruction("__" + std::to_string(vid) + n,std::make_shared<load_instruction>(n),true).exec(ctx,mod,builder,variables,functions);
+            }
+        }
+        llvm::Value* structvalue = nullptr;
+        if (!pstructres.isType()){
+            structvalue = pstructres.getvalue();
+        } else if (auto ti = std::dynamic_pointer_cast<type_instruction>(pstruct)) {
+            if (ti->type && ti->type->is_struct()){
+                auto st = std::dynamic_pointer_cast<StructType>(ti->type);
+                if (st && globals.find(st->name()) != globals.end()){
+                    structvalue = globals[st->name()];
+                }
             }
         }
         
         auto tmpc = gettmp();
-        auto allocd = alloc_instruction(tmpc,nullptr,pstruct->exec(ctx,mod,builder,variables,functions).gettype()).exec(ctx,mod,builder,variables,functions);
+        auto allocd = alloc_instruction(tmpc,nullptr,structty).exec(ctx,mod,builder,variables,functions);
         int i = 0;
-        std::vector<llvm::Value*> metaty{pstruct->exec(ctx,mod,builder,variables,functions).getvalue()};
+        std::vector<llvm::Value*> metaty{};
+        if (structvalue){
+            metaty.push_back(structvalue);
+        }
         for (auto& value: fvalues){
-            auto fptr = builder.CreateStructGEP(pstruct->exec(ctx,mod,builder,variables,functions).gettype(),allocd.getvalue(),i,gettmp());
+            auto fptr = builder.CreateStructGEP(structty,allocd.getvalue(),i,gettmp());
             metaty.push_back(value);
             builder.CreateStore(value,fptr);
             i++;
         }
         auto stmp = gettmp();
         MetadataRegistry.attachMetadata(variables[tmpc],MetadataRegistry.genmetadata(ctx,stmp),"structee");
-        MetadataRegistry.propagateMetadata(pstruct->exec(ctx,mod,builder,variables,functions).getvalue(),variables[tmpc]);
+        if (structvalue){
+            MetadataRegistry.propagateMetadata(structvalue,variables[tmpc]);
+        }
         mman[stmp] = metaty;
         mmanstr[stmp] = sfields;
-        llvm::Value* load = builder.CreateLoad(pstruct->exec(ctx,mod,builder,variables,functions).gettype(),variables[tmpc],gettmp());
+        llvm::Value* load = builder.CreateLoad(structty,variables[tmpc],gettmp());
         
         return InstructionContainer(load);
 
@@ -2545,10 +2593,9 @@ struct init_array_instruction :  public Instruction {
 
         if (elemty->isIntegerTy(8)){
             int64_t sz = DL->getTypeAllocSize(arrayty);
-            std::vector<std::shared_ptr<Instruction>> vec{std::make_shared<resource_instruction>("i32",0)};
-            auto casttoi32 = cast_instruction(std::make_shared<value_instruction>(elem.getvalue()),std::make_shared<type_instruction>(nullptr,nullptr,vec)).exec(ctx,mod,builder,variables,functions).getvalue();
+            auto casttoi32 = cast_instruction(std::make_shared<value_instruction>(elem.getvalue()),std::make_shared<type_instruction>(TYR.get_i32())).exec(ctx,mod,builder,variables,functions).getvalue();
             
-            memset_instruction(variables[atmp],casttoi32,resource_instruction("i64",sz).exec(ctx,mod,builder,variables,functions).getvalue()).exec(ctx,mod,builder,variables,functions);
+            memset_instruction(variables[atmp],casttoi32,resource_instruction(TYR.get_i64(),sz).exec(ctx,mod,builder,variables,functions).getvalue()).exec(ctx,mod,builder,variables,functions);
 
             //builder.CreateMemSet(variables[atmp],elem.getvalue(),DL->getTypeAllocSize(arrayty),DL->getABITypeAlign(elemty));
         } else {
@@ -2558,7 +2605,7 @@ struct init_array_instruction :  public Instruction {
             auto merge = llvm::BasicBlock::Create(ctx,gettmp(),builder.GetInsertBlock()->getParent());
 
             
-            assign_instruction("___array__loop__back___",std::make_shared<resource_instruction>("u32",uint32_t(0))).exec(ctx,mod,builder,variables,functions);
+            assign_instruction("___array__loop__back___",std::make_shared<resource_instruction>(TYR.get_u32(),uint32_t(0))).exec(ctx,mod,builder,variables,functions);
             //___array__loop__back___
             if (elem.isPair()){ // for our lovely pair returns
                 elem = InstructionContainer(elem.receivepair()[0]);
@@ -2573,11 +2620,11 @@ struct init_array_instruction :  public Instruction {
             builder.SetInsertPoint(loopinto);
             auto iload = load_instruction("___array__loop__back___").exec(ctx,mod,builder,variables,functions).getvalue();
             auto gep = builder.CreateInBoundsGEP(arrayty,variables[atmp],{builder.getInt32(0),iload},gettmp());
-            auto szof = resource_instruction("i64",int64_t(DL->getTypeAllocSize(elemty))).exec(ctx,mod,builder,variables,functions);
+            auto szof = resource_instruction(TYR.get_i64(),int64_t(DL->getTypeAllocSize(elemty))).exec(ctx,mod,builder,variables,functions);
             memcpy_instruction(gep,elem.getvalue(),szof.getvalue()).exec(ctx,mod,builder,variables,functions);
             //builder.CreateMemCpy(gep,DL->getABITypeAlign(elemty),elem.getvalue(),DL->getABITypeAlign(elemty),DL->getTypeAllocSize(elemty));
-            store_instruction("___array__loop__back___",std::make_shared<value_instruction>(builder.CreateAdd(iload,resource_instruction("u32",uint32_t(1)).exec(ctx,mod,builder,variables,functions).getvalue()))).exec(ctx,mod,builder,variables,functions);
-            builder.CreateCondBr(operation_instruction(std::make_shared<load_instruction>("___array__loop__back___"),std::make_shared<resource_instruction>("u32",uint32_t(sz)),"<",false).exec(ctx,mod,builder,variables,functions).getvalue(),loopinto,merge);
+            store_instruction("___array__loop__back___",std::make_shared<value_instruction>(builder.CreateAdd(iload,resource_instruction(TYR.get_u32(),uint32_t(1)).exec(ctx,mod,builder,variables,functions).getvalue()))).exec(ctx,mod,builder,variables,functions);
+            builder.CreateCondBr(operation_instruction(std::make_shared<load_instruction>("___array__loop__back___"),std::make_shared<resource_instruction>(TYR.get_u32(),uint32_t(sz)),"<",false).exec(ctx,mod,builder,variables,functions).getvalue(),loopinto,merge);
             builder.SetInsertPoint(merge);
             doneblocks.push_back(looptmp);
 
@@ -2747,6 +2794,9 @@ struct extend_instruction :  public Instruction {
                         functions[/*exttmp+*/std::to_string(extty) + "method" + origname] = methfn;
                         globals[method->name] = variables[method->name];
                         globaltypes[method->name] = types[method->name];
+                        if (types.find(method->name) != types.end()){
+                            storeTypeForName(method->name,typeFromInstruction(method),true);
+                        }
                         
                     } else if (auto cons = std::dynamic_pointer_cast<assign_instruction>(exten)){
                         cons->global = true;
@@ -2757,6 +2807,11 @@ struct extend_instruction :  public Instruction {
                         cons->exec(ctx,mod,builder,variables,functions);
                         globals[cons->name] = variables[cons->name]; // ncbnname should not be used once a better idea is thought up
                         globaltypes[cons->name] = types[cons->name];
+                        if (vartypes.find(cons->name) != vartypes.end()){
+                            storeTypeForName(cons->name,vartypes[cons->name],true);
+                        } else if (types.find(cons->name) != types.end()){
+                            storeTypeForName(cons->name,typeFromInstruction(cons),true);
+                        }
                         attache.push_back(cons->name);
                     }
                 }
@@ -2944,9 +2999,7 @@ class Instructor {
     }
     
     std::string inittarget(std::string target, std::string reloc="PIC",std::string cpu="generic"){ 
-    if (!DL){
-        DL = std::make_shared<llvm::DataLayout>();
-    }
+
     llvm::InitializeAllTargetInfos();
     llvm::InitializeAllTargets();
     llvm::InitializeAllTargetMCs();
@@ -3004,14 +3057,25 @@ class Instructor {
     auto ty = targetMachine->createDataLayout();
     
     module.setDataLayout(ty);
-    module.setTargetTriple(target);
-
+    llvm::Triple trip(target);
+    module.setTargetTriple(trip);
+    if (!DL){
+        DL = std::make_shared<llvm::DataLayout>();
+    }
 
     return target;
     }
 
     
     void executeInstruction(std::shared_ptr<Instruction>inst) {
+        auto boolTy = TYR.get_bool();
+        auto boolLlvm = type_instruction(boolTy).exec(context, module, builder,variables,functions).gettype();
+        globals["true"] = llvm::ConstantInt::get(boolLlvm, 1, false);
+        globaltypes["true"] = boolLlvm;
+        globalvartypes["true"] = boolTy;
+        globals["false"] = llvm::ConstantInt::get(boolLlvm, 0, false);
+        globaltypes["false"] = boolLlvm;
+        globalvartypes["false"] = boolTy;
         inst->exec(context, module, builder,variables,functions);
     }
     llvm::OptimizationLevel optfromint(int o){
@@ -3087,9 +3151,9 @@ int example() {
     llvm::LLVMContext &context = interpreter.context;
     llvm::Type *i32Type = llvm::Type::getInt32Ty(context);
 
-    auto val1 = std::make_shared<resource_instruction>("i32",42);
+    auto val1 = std::make_shared<resource_instruction>(TYR.get_i32(),42);
 
-    auto val2 = std::make_shared<resource_instruction>("i32",13);
+    auto val2 = std::make_shared<resource_instruction>(TYR.get_i32(),13);
     auto loadx = load_instruction("x");
 
     assign_instruction assignInst("x", val1); // MAKE BLOCK INSTRUCTION
@@ -3099,17 +3163,17 @@ int example() {
     operation_instruction opInst(std::make_shared<load_instruction>(loadx), val2 , "+");
     assign_instruction assignInst2("v", std::make_shared<operation_instruction>(opInst));
     load_instruction loadInst("v"); // create blocks later
-    std::vector<std::shared_ptr<Instruction>> printfty{std::make_shared<resource_instruction>(std::string("RawString"),std::string("Ok!"))};
-    auto printfdecl = std::make_shared<declare_function_instruction>(std::string("printf"),printfty,std::make_shared<resource_instruction>(std::string("i32"),13),true);
+    std::vector<std::shared_ptr<Instruction>> printfty{std::make_shared<type_instruction>(TYR.get_string())};
+    auto printfdecl = std::make_shared<declare_function_instruction>(std::string("printf"),printfty,std::make_shared<type_instruction>(TYR.get_i32()),true);
     auto loadpf = std::make_shared<load_instruction>("printf");
     loadpf->setGiveBackPtr(false);
     loadpf->getName();
-    std::vector<std::shared_ptr<Instruction>> cargs{std::make_shared<resource_instruction>(std::string("RawString"),std::string("Hello world test var: %s\n")),std::make_shared<resource_instruction>(std::string("RawString"),std::string("Hah"))};
+    std::vector<std::shared_ptr<Instruction>> cargs{std::make_shared<resource_instruction>(TYR.get_string(),std::string("Hello world test var: %s\n")),std::make_shared<resource_instruction>(TYR.get_string(),std::string("Hah"))};
     auto cinst = std::make_shared<call_instruction>(loadpf,cargs,nullptr);
     auto retinst = std::make_shared<return_instruction>(cinst);
     auto pointerinst = std::make_shared<pointer_instruction>(val2);
     auto bptrinst = std::make_shared<borrowed_pointer_instruction>(pointerinst);
-    auto derefinst = std::make_shared<dereference_instruction>(pointerinst,std::make_shared<type_instruction>(nullptr));
+    auto derefinst = std::make_shared<dereference_instruction>(pointerinst,std::make_shared<type_instruction>(TYR.get_i32()));
     auto ptrstoreinst = std::make_shared<pointer_store_instruction>(pointerinst,val2);
     auto str = std::string("");
     auto structdeclinst = std::make_shared<struct_decl_instruction>(str,printfty);
@@ -3143,7 +3207,7 @@ int example() {
     
     block_instruction blk4(true,{std::make_shared<assign_instruction>(assignInst),std::make_shared<assign_instruction>(assignInst2),printfdecl,cinst,retinst},nullptr);
     auto ifinst = std::make_shared<if_instruction>(val2,std::make_shared<block_instruction>(blk4));
-    function_instruction fninst("main",std::make_shared<resource_instruction>(resource_instruction("i32",int32_t(10))),{},std::make_shared<block_instruction>(blk4),true,false,false);
+    function_instruction fninst("main",std::make_shared<type_instruction>(TYR.get_i32()),{},std::make_shared<block_instruction>(blk4),true,false,false);
     interpreter.executeInstruction(std::make_shared<function_instruction>(fninst));
     //interpreter.executeInstruction(&opInst);
     //interpreter.executeInstruction(&loadInst);

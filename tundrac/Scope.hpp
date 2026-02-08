@@ -338,9 +338,9 @@ bool compareMap(const tsl::ordered_map<K, T>& map1, const tsl::ordered_map<K, T>
 
 
 // Scope class to manage variables
-class Scope {
+class _Scope {
 public:
-    Scope(bool isMain = false,std::shared_ptr<Scope> parentScope = nullptr) : isMain(isMain), parentScope(parentScope) {}
+    _Scope(bool isMain = false,std::shared_ptr<_Scope> parentScope = nullptr) : isMain(isMain), parentScope(parentScope) {}
 
     void addVariable(const std::string& name, std::shared_ptr<Variable> var) {
         auto check = variables.find(name); // mut tracelog time.
@@ -367,8 +367,8 @@ public:
         //println(name);
 
             //println(name);
-            //println("check: " + convertToString(check != variables.end()));
-            ////println(convertToString(var->getInt()));
+            //println("check: " + TypeConverter::to_string(check != variables.end()));
+            ////println(TypeConverter::to_string(var->getInt()));
 
             
         
@@ -471,7 +471,7 @@ private:
     bool sig;
     bool isMain;
     bool isLoop;
-    std::shared_ptr<Scope> parentScope;
+    std::shared_ptr<_Scope> parentScope;
     tsl::ordered_map<std::string, std::shared_ptr<Variable>> variables;
     tsl::ordered_map<std::string, int> pointers;
 };

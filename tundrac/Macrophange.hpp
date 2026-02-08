@@ -111,7 +111,7 @@ class Macro {
                 (*dual_map[mA->id]) = parsed;
             }
             
-            return std::make_shared<ASTNode>();
+            return std::make_shared<ErrorNode>();
         }
 
         else if (auto mI = std::dynamic_pointer_cast<MacroIdentifier>(inst)){
@@ -127,7 +127,7 @@ class Macro {
                     throw std::runtime_error("Next has 0 arguments");
                 }
                 parser->advance();
-                return std::make_shared<ASTNode>();
+                return std::make_shared<ErrorNode>();
             }
             else if (mC->value == "Error"){
                 if (mC->args.size() != 1){
@@ -163,7 +163,7 @@ class Macro {
                     throw std::runtime_error("Invalid Token Type specified");
                 }
                 parser->consume(TokenTypeMap[mC->args[0]]);
-                return std::make_shared<ASTNode>();
+                return std::make_shared<ErrorNode>();
             }
             else if (mC->value == "expect"){
                 if (mC->args.size() != 1){
@@ -173,7 +173,7 @@ class Macro {
                     throw std::runtime_error("Invalid Token Type specified");
                 }
                 parser->match(TokenTypeMap[mC->args[0]]);
-                return std::make_shared<ASTNode>();
+                return std::make_shared<ErrorNode>();
             }
             else if (mC->value == "ensure"){
                 if (mC->args.size() != 1){
@@ -185,7 +185,7 @@ class Macro {
                 if (parser->currentToken.type != TokenTypeMap[mC->args[0]]){
                     parser->match(TokenTypeMap[mC->args[0]]);
                 }
-                return std::make_shared<ASTNode>();
+                return std::make_shared<ErrorNode>();
             }
             throw std::runtime_error("Unknown MacroCall : " + mC->value);
         } 
@@ -193,7 +193,7 @@ class Macro {
             return mE->value;
         }
         else {
-            return std::make_shared<ASTNode>();
+            return std::make_shared<ErrorNode>();
         }
 
     }
